@@ -15,9 +15,9 @@
     "build:cli": "cd cli && tsup --config tsup.config.ts",
     "build:cli:bun": "pnpm build:cli && bun build cli/dist/index.js --compile --outfile cli/dist-bin/safecafe",
     "preview": "vite preview --host 0.0.0.0",
-    "cli": "tsx cli/index.ts",
-    "cli:packed": "node cli/dist/index.js",
-    "cli:bun": "bun cli/index.ts",
+    "cli": "node scripts/run-cli.mjs",
+    "cli:packed": "SAFECAFE_CLI_COMMAND=node SAFECAFE_CLI_ENTRY=cli/dist/index.js node scripts/run-cli.mjs",
+    "cli:bun": "SAFECAFE_CLI_COMMAND=bun SAFECAFE_CLI_ENTRY=cli/index.ts node scripts/run-cli.mjs",
     "check": "tsc -b --noEmit",
     "test:integration": "pnpm build:cli && node scripts/integration-test.mjs",
     "test:system": "pnpm build && node scripts/system-test.mjs"

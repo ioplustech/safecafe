@@ -77,7 +77,7 @@ export async function assertStakePossible(globals: GlobalOptions, account: Addre
   const validatorMetadata = findValidator(validators, validator)
   if (validatorMetadata?.status === "inactive") throw new Error(`Validator is inactive: ${validatorMetadata.label}`)
   if (snapshot.safeBalance < amount) {
-    throw new Error(`Insufficient SAFE balance. Need ${formatSafe(amount)}, have ${formatSafe(snapshot.safeBalance)}.`)
+    throw new Error(`Insufficient SAFE balance. Need ${formatSafe(amount, 6)}, have ${formatSafe(snapshot.safeBalance, 6)}.`)
   }
 }
 
@@ -95,7 +95,7 @@ export async function assertUnstakePossible(globals: GlobalOptions, account: Add
     },
   ])
   if (position.userStake < amount) {
-    throw new Error(`Insufficient validator stake. Need ${formatSafe(amount)}, have ${formatSafe(position.userStake)}.`)
+    throw new Error(`Insufficient validator stake. Need ${formatSafe(amount, 6)}, have ${formatSafe(position.userStake, 6)}.`)
   }
 }
 

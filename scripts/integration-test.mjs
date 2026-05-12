@@ -17,9 +17,15 @@ function run(args, expected) {
   return output
 }
 
+function runNoArgs() {
+  const output = execFileSync(process.execPath, [cli], { encoding: "utf8" })
+  if (!output.includes("Usage: safecafe")) throw new Error("Expected no-argument CLI call to print help")
+}
+
 const workdir = mkdtempSync(join(tmpdir(), "safecafe-cli-"))
 
 try {
+  runNoArgs()
   run(["status", "--mock"], ["Safecafe is ready", "SAFE balance"])
   run(["operators", "--mock", "--active"], ["Safenet operators", "Core Contributors"])
   run(["withdrawals", "--mock", "--account", account], ["Pending withdrawals", "Ready to claim"])

@@ -14,6 +14,11 @@ program
 
 registerCommands(program)
 
+if (process.argv.length <= 2) {
+  program.outputHelp()
+  process.exit(0)
+}
+
 program.parseAsync(process.argv).catch((error: unknown) => {
   console.error(error instanceof Error ? error.message : error)
   process.exit(1)
