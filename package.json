@@ -18,7 +18,9 @@
     "cli": "tsx cli/index.ts",
     "cli:packed": "node cli/dist/index.js",
     "cli:bun": "bun cli/index.ts",
-    "check": "tsc -b --noEmit"
+    "check": "tsc -b --noEmit",
+    "test:integration": "pnpm build:cli && node scripts/integration-test.mjs",
+    "test:system": "pnpm build && node scripts/system-test.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "5.1.4",

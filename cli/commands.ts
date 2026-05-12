@@ -77,8 +77,8 @@ export function registerCommands(program: Command) {
   })
 
 program
-  .command("menu")
-  .description("Browse validators like a staking menu")
+  .command("operators")
+  .description("List Safenet staking operators")
   .option("--active", "Only show active validators")
   .option("--sort <field>", "Sort by name, participation, commission, or stake", "participation")
   .action(async (options: { active?: boolean; sort: string }) => {
@@ -94,7 +94,7 @@ program
       })
 
     output(globals, filtered, () => {
-      console.log("Validator menu")
+      console.log("Safenet operators")
       for (const validator of filtered) {
         console.log(
           `${validator.label.padEnd(22)} ${validator.status.padEnd(8)} participation ${validator.participationRate
@@ -106,7 +106,7 @@ program
   })
 
 program
-  .command("brew")
+  .command("stake")
   .description("Plan or send a stake transaction")
   .requiredOption("--validator <address-or-name>", "Validator address or known label")
   .requiredOption("--amount <safe>", "SAFE amount")
@@ -126,7 +126,7 @@ program
   })
 
 program
-  .command("cool")
+  .command("unstake")
   .description("Plan or send an unstake transaction")
   .requiredOption("--validator <address-or-name>", "Validator address or known label")
   .requiredOption("--amount <safe>", "SAFE amount")
@@ -145,15 +145,15 @@ program
   })
 
 program
-  .command("tab")
+  .command("withdrawals")
   .description("Show withdrawal queue for an account")
   .requiredOption("--account <address>", "EOA or Safe address")
   .action(async (options: { account: string }) => {
     const globals = program.opts<GlobalOptions>()
     if (globals.mock) {
       output(globals, mockSummary, () => {
-        console.log(`Pending withdrawal tab: ${formatSafe(mockSummary.pendingWithdrawals)} SAFE`)
-        console.log(`Ready to collect:       ${formatSafe(mockSummary.claimableWithdrawals)} SAFE`)
+        console.log(`Pending withdrawals:    ${formatSafe(mockSummary.pendingWithdrawals)} SAFE`)
+        console.log(`Ready to claim:         ${formatSafe(mockSummary.claimableWithdrawals)} SAFE`)
         console.log(`Protocol delay:         ${formatDelay(mockSummary.withdrawDelay)}`)
       })
       return
@@ -163,7 +163,7 @@ program
     const snapshot = await readAccountSnapshot(createClient(globals), account)
     output(globals, snapshot.pendingWithdrawals, () => {
       if (!snapshot.pendingWithdrawals.length) {
-        console.log("No withdrawal tab is open.")
+        console.log("No withdrawals are pending.")
         return
       }
       snapshot.pendingWithdrawals.forEach((withdrawal, index) => {
@@ -174,7 +174,7 @@ program
   })
 
 program
-  .command("collect-withdrawal")
+  .command("claim-withdrawal")
   .description("Plan or send a withdrawal claim")
   .option("--account <address>", "Account used for planning")
   .option("--dry-run", "Only print the transaction plan", true)
@@ -190,7 +190,7 @@ program
   })
 
 program
-  .command("beans")
+  .command("rewards")
   .description("Show reward proof and claimable reward status")
   .requiredOption("--account <address>", "EOA or Safe address")
   .action(async (options: { account: string }) => {
@@ -198,7 +198,7 @@ program
     if (globals.mock) {
       output(globals, { account: options.account, claimable: mockSummary.claimableRewards }, () => {
         console.log(`Account:          ${options.account}`)
-        console.log(`Reward beans:     ${formatSafe(mockSummary.claimableRewards)} SAFE`)
+        console.log(`Claimable rewards: ${formatSafe(mockSummary.claimableRewards)} SAFE`)
         console.log("Proof status:     sample data")
       })
       return
@@ -222,7 +222,7 @@ program
   })
 
 program
-  .command("collect-rewards")
+  .command("claim-rewards")
   .description("Plan or send a reward claim")
   .requiredOption("--account <address>", "Reward account")
   .option("--dry-run", "Only print the transaction plan", true)
@@ -284,15 +284,15 @@ program
     console.log("   safecafe status --account 0xYourSafe")
     console.log("")
     console.log("2. Pick a validator")
-    console.log("   safecafe menu --active --sort participation")
+    console.log("   safecafe operators --active --sort participation")
     console.log("")
     console.log("3. Prepare a stake")
-    console.log('   safecafe brew --account 0xYourSafe --validator "Core Contributors" --amount 100 --dry-run')
+    console.log('   safecafe stake --account 0xYourSafe --validator "Core Contributors" --amount 100 --dry-run')
     console.log("")
     console.log("4. Export a Safe payload")
-    console.log('   safecafe brew --account 0xYourSafe --validator "Core Contributors" --amount 100 --safe-payload ./safecafe-safe.json')
+    console.log('   safecafe stake --account 0xYourSafe --validator "Core Contributors" --amount 100 --safe-payload ./safecafe-safe.json')
     console.log("")
     console.log("5. Collect rewards when proof is available")
-    console.log("   safecafe beans --account 0xYourSafe")
+    console.log("   safecafe rewards --account 0xYourSafe")
   })
 }

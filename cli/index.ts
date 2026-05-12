@@ -10,7 +10,7 @@ program
   .option("--rpc <url>", "Ethereum RPC URL")
   .option("--json", "Output machine-readable JSON")
   .option("--mock", "Use bundled sample data")
-  .showHelpAfterError("(use --help for the Safecafe command menu)")
+  .showHelpAfterError("(use --help for Safecafe commands)")
 
 registerCommands(program)
 

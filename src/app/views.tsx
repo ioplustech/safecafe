@@ -439,9 +439,9 @@ export function CliView(props: { t: MessageBundle; account: Address | null; vali
     "pnpm install",
     "pnpm cli guide",
     `pnpm cli status --account ${account}`,
-    "pnpm cli menu --active --sort participation",
-    `pnpm cli brew --account ${account} --validator ${props.validator} --amount ${props.amount} --dry-run`,
-    `pnpm cli --rpc https://eth.llamarpc.com beans --account ${account}`,
+    "pnpm cli operators --active --sort participation",
+    `pnpm cli stake --account ${account} --validator ${props.validator} --amount ${props.amount || "100"} --dry-run`,
+    `pnpm cli --rpc https://eth.llamarpc.com rewards --account ${account}`,
     "safecafe status --mock",
   ]
   return (
