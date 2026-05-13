@@ -15,6 +15,8 @@
     "build:cli": "cd cli && tsup --config tsup.config.ts",
     "build:cli:bun": "pnpm build:cli && bun build cli/dist/index.js --compile --outfile cli/dist-bin/safecafe",
     "preview": "vite preview --host 0.0.0.0",
+    "cloudflare:preview": "pnpm build:web && pnpm dlx wrangler@latest pages dev dist",
+    "cloudflare:deploy": "pnpm build:web && pnpm dlx wrangler@latest pages deploy dist --project-name safecafe",
     "cli": "node scripts/run-cli.mjs",
     "cli:packed": "node scripts/run-cli.mjs --command node --entry cli/dist/index.js",
     "cli:bun": "node scripts/run-cli.mjs --command bun --entry cli/index.ts",

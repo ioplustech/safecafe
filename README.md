@@ -85,6 +85,8 @@ pnpm build:web
 
 The output in `dist/` can be deployed to Vercel, Cloudflare Pages, IPFS-style static hosting, or any static host that supports SPA fallback routing.
 
+Cloudflare Pages is the recommended primary static host. See [CLOUDFLARE.md](CLOUDFLARE.md) for Git-connected deployments, direct Wrangler uploads, headers, routing, and release checks.
+
 ## Resilience
 
 Safecafe is designed for Track A: permissionless, non-custodial access with no proprietary backend requirement. See [RESILIENCE.md](RESILIENCE.md) for the decentralization, uptime, signing, data-source, and release-verification model.
