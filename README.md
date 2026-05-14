@@ -1,5 +1,7 @@
 # Safecafe
 
+**Live Demo:** [safecafe.pages.dev](https://safecafe.pages.dev/)
+
 Safecafe is a standalone non-custodial interface for Safenet staking. It includes a web app, CLI, protocol reads, transaction planning, Safe Transaction Builder payload export, and shared utilities in one project.
 
 Safecafe never takes custody of funds. Users review and sign transactions from their own wallet or Safe.
