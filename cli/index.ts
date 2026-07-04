@@ -1,4 +1,5 @@
 import { Command } from "commander"
+import { SAFECAFE_VERSION } from "../src/shared/version"
 import { registerCommands } from "./commands"
 
 const program = new Command()
@@ -6,7 +7,7 @@ const program = new Command()
 program
   .name("safecafe")
   .description("Guided non-custodial Safenet staking CLI")
-  .version("0.1.0")
+  .version(SAFECAFE_VERSION)
   .option("--rpc <url>", "Ethereum RPC URL")
   .option("--json", "Output machine-readable JSON")
   .option("--mock", "Use bundled sample data")

@@ -33,7 +33,7 @@ The web app is a static client-side application. It should be published to multi
 
 - Primary hosted build, such as Cloudflare Pages.
 - Secondary hosted build, such as Vercel.
-- IPFS build with a pinned CID.
+- IPFS build with a Filebase-pinned CID.
 - Optional ENS contenthash pointing to the latest stable IPFS build.
 - GitHub Releases with built assets and checksums.
 - npm CLI package exposing the `safecafe` binary.
@@ -92,7 +92,7 @@ Each public release should include:
 - Build command and package manager version.
 - Contract address list.
 - Web deployment URLs.
-- IPFS CID, if published.
+- IPFS CID, if published through Filebase.
 - npm package version and integrity.
 - CLI binary checksums, if binaries are published.
 - Manual smoke-test results for stake planning, unstake planning, withdrawal claim planning, reward proof validation, and Safe payload export.

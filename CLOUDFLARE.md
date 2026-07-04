@@ -37,6 +37,77 @@ pnpm dlx wrangler@latest whoami
 pnpm dlx wrangler@latest login
 ```
 
+## IPFS Release Via Filebase
+
+Cloudflare Pages remains the fast hosted mirror. For immutable IPFS releases, use Filebase as the pinning/storage layer and keep Cloudflare Web3 IPFS Gateway as an optional read gateway only.
+
+Configure local secrets in `.env`:
+
+```bash
+FILEBASE_ACCESS_TOKEN=...
+FILEBASE_SECRET_KEY=...
+FILEBASE_BUCKET=safecafe
+FILEBASE_RELEASE_KEY_PREFIX=releases
+```
+
+The Filebase SDK uses the Filebase S3 endpoint by default.
+
+Publish a verified web build to Filebase:
+
+```bash
+pnpm check
+pnpm test:integration
+pnpm test:system
+pnpm ipfs:publish
+```
+
+The script builds `dist/`, writes `dist/release-manifest.json`, packs the files as an IPFS directory CAR through the Filebase SDK, uploads the CAR to the Filebase IPFS bucket, and prints:
+
+```text
+ipfs://<CID>
+https://ipfs.filebase.io/ipfs/<CID>/
+https://<CID>.ipfs.dweb.link/
+```
+
+Set the ENS `contenthash` for `safe-staking.eth` to the printed immutable URI:
+
+```text
+ipfs://<CID>
+```
+
+After the ENS transaction confirms, verify:
+
+```text
+https://safe-staking.eth.limo
+```
+
+Every content change creates a new CID. Keep old release CIDs pinned in Filebase if you want historical builds to remain retrievable.
+
+After a successful upload, the script also updates release records in git:
+
+- [IPFS_RELEASES.md](IPFS_RELEASES.md): append-only human-readable release table.
+- [releases/ipfs/latest.json](releases/ipfs/latest.json): machine-readable latest release record.
+- `releases/ipfs/<CID>.json`: machine-readable immutable release snapshot.
+- `README.md` and this document: latest CID blocks.
+
+`dist/release-manifest.json` is included inside the IPFS directory and records build inputs, file hashes, commit, and contract addresses. The final root CID is recorded outside that IPFS directory in `releases/ipfs/*.json`, because writing the final CID into a file inside the directory would change the directory CID.
+
+<!-- ipfs-latest:start -->
+## Latest IPFS Release
+
+- Version: `0.1.0`
+- Commit: `4c87b8db92c32178df0cc61d3d747264ad99e86d`
+- Dirty build: `yes`
+- CID: `bafybeid5igerevatkm46z45thxssenbkeyfbikkip7v5n7mpubvlsst7ji`
+- ENS contenthash: `ipfs://bafybeid5igerevatkm46z45thxssenbkeyfbikkip7v5n7mpubvlsst7ji`
+- Filebase: https://ipfs.filebase.io/ipfs/bafybeid5igerevatkm46z45thxssenbkeyfbikkip7v5n7mpubvlsst7ji/
+- dweb.link: https://bafybeid5igerevatkm46z45thxssenbkeyfbikkip7v5n7mpubvlsst7ji.ipfs.dweb.link/
+- Build manifest: https://ipfs.filebase.io/ipfs/bafybeid5igerevatkm46z45thxssenbkeyfbikkip7v5n7mpubvlsst7ji/release-manifest.json
+- Release record: [releases/ipfs/latest.json](releases/ipfs/latest.json)
+
+After verifying the links, set `safe-staking.eth` contenthash to the ENS contenthash above.
+<!-- ipfs-latest:end -->
+
 ## Local Cloudflare Preview
 
 ```bash

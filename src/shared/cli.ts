@@ -1,15 +1,15 @@
 import { readFileSync, writeFileSync } from "node:fs"
-import { createInterface } from "node:readline/promises"
 import { stdin as input, stdout as outputStream } from "node:process"
-import { createWalletClient, http, type Hex } from "viem"
+import { createInterface } from "node:readline/promises"
+import { createWalletClient, type Hex, http } from "viem"
 import { privateKeyToAccount } from "viem/accounts"
 import { mainnet } from "viem/chains"
 import {
-  DEFAULT_RPC_URLS,
   compactAddress,
   createSafenetPublicClient,
-  toSafeTransactionPayload,
+  DEFAULT_RPC_URLS,
   type TxPlan,
+  toSafeTransactionPayload,
 } from "../protocol"
 import { bigintReplacer, resolveEnvValue, stringifyBigInts } from "./utils"
 
@@ -60,9 +60,12 @@ export async function readSigningPrivateKey(
   options: SigningOptions,
   env: Record<string, string | undefined>,
 ): Promise<Hex> {
-  const sourceCount = Number(!!options.privateKeyPrompt) + Number(!!options.privateKeyStdin) + Number(!!options.privateKeyEnv)
+  const sourceCount =
+    Number(!!options.privateKeyPrompt) + Number(!!options.privateKeyStdin) + Number(!!options.privateKeyEnv)
   if (sourceCount !== 1) {
-    throw new Error("Choose exactly one signing key source: --private-key-prompt, --private-key-stdin, or --private-key-env <name>.")
+    throw new Error(
+      "Choose exactly one signing key source: --private-key-prompt, --private-key-stdin, or --private-key-env <name>.",
+    )
   }
 
   if (options.privateKeyPrompt) return normalizePrivateKey(await promptHidden("Private key (input hidden): "))
@@ -109,7 +112,9 @@ export function printPlan(plan: TxPlan) {
   })
   if (plan.warnings.length) {
     console.log("")
-    plan.warnings.forEach((warning) => console.log(`Warning: ${warning}`))
+    for (const warning of plan.warnings) {
+      console.log(`Warning: ${warning}`)
+    }
   }
 }
 

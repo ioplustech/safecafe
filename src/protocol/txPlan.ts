@@ -1,4 +1,4 @@
-import { encodeFunctionData, parseUnits, type Address, type Hex } from "viem"
+import { type Address, encodeFunctionData, type Hex, parseUnits } from "viem"
 import { erc20Abi, merkleDropAbi, stakingAbi } from "./abi"
 import { CONTRACTS } from "./contracts"
 
@@ -80,11 +80,7 @@ export function planStake(params: {
   }
 }
 
-export function planUnstake(params: {
-  validator: Address
-  amount: string
-  account?: Address
-}): TxPlan {
+export function planUnstake(params: { validator: Address; amount: string; account?: Address }): TxPlan {
   const amount = parseSafeAmount(params.amount)
   return {
     action: "unstake",

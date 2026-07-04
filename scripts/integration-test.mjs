@@ -11,7 +11,7 @@ function run(args, expected) {
   const output = execFileSync(process.execPath, [cli, ...args], { encoding: "utf8" })
   for (const text of expected) {
     if (!output.includes(text)) {
-      throw new Error(`Expected \"${text}\" in: safecafe ${args.join(" ")}`)
+      throw new Error(`Expected "${text}" in: safecafe ${args.join(" ")}`)
     }
   }
   return output
@@ -33,8 +33,14 @@ try {
   run(["contracts"], ["SAFE token", "Staking contract", "Rewards contract"])
   run(["guide"], ["safecafe validators", "safecafe stake", "safecafe rewards"])
 
-  run(["stake", "--mock", "--validator", validator, "--amount", "100", "--dry-run"], ["Plan: Stake 100 SAFE", "Stake SAFE to validator"])
-  run(["unstake", "--mock", "--validator", validator, "--amount", "25", "--dry-run"], ["Plan: Unstake 25 SAFE", "Initiate withdrawal from validator"])
+  run(
+    ["stake", "--mock", "--validator", validator, "--amount", "100", "--dry-run"],
+    ["Plan: Stake 100 SAFE", "Stake SAFE to validator"],
+  )
+  run(
+    ["unstake", "--mock", "--validator", validator, "--amount", "25", "--dry-run"],
+    ["Plan: Unstake 25 SAFE", "Initiate withdrawal from validator"],
+  )
   run(["claim-withdrawal", "--mock", "--dry-run"], ["Claim withdrawal", "Claim next FIFO withdrawal"])
   run(["claim-rewards", "--mock", "--account", account, "--dry-run"], ["Claim staking rewards", "Claim Merkle rewards"])
 

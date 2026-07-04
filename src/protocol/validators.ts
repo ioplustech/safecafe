@@ -1,4 +1,4 @@
-import { getAddress, isAddress, type Address } from "viem"
+import { type Address, getAddress, isAddress } from "viem"
 import { DEFAULT_VALIDATOR_INFO_URLS } from "./contracts"
 
 export type ValidatorInfo = {
@@ -66,12 +66,9 @@ function toValidator(raw: RawValidator): ValidatorInfo | null {
   if (typeof raw.address !== "string" || !isAddress(raw.address)) return null
   if (typeof raw.label !== "string") return null
 
-  const commission =
-    typeof raw.commission === "number" ? Math.round(raw.commission * 10000) / 100 : 0
+  const commission = typeof raw.commission === "number" ? Math.round(raw.commission * 10000) / 100 : 0
   const participationRate =
-    typeof raw.participation_rate_14d === "number"
-      ? Math.round(raw.participation_rate_14d * 10000) / 100
-      : 0
+    typeof raw.participation_rate_14d === "number" ? Math.round(raw.participation_rate_14d * 10000) / 100 : 0
 
   return {
     address: getAddress(raw.address),
@@ -126,9 +123,7 @@ export function findValidator(validators: ValidatorInfo[], query: string): Valid
   const normalized = query.toLowerCase()
   return (
     validators.find(
-      (validator) =>
-        validator.address.toLowerCase() === normalized ||
-        validator.label.toLowerCase() === normalized,
+      (validator) => validator.address.toLowerCase() === normalized || validator.label.toLowerCase() === normalized,
     ) ?? null
   )
 }

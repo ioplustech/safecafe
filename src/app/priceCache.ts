@@ -1,8 +1,5 @@
 import { SAFE_PRICE_CACHE_MS, SAFE_PRICE_SOURCE } from "../protocol"
-import {
-  readCachedSafePrice as readStoredSafePrice,
-  writeCachedSafePrice as writeStoredSafePrice,
-} from "../shared"
+import { readCachedSafePrice as readStoredSafePrice, writeCachedSafePrice as writeStoredSafePrice } from "../shared"
 import type { SafePriceState } from "./types"
 
 const safePriceCacheKey = "safecafe.safeUsdPrice.v1"

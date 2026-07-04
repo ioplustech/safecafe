@@ -1,4 +1,4 @@
-import { isAddress, type Address } from "viem"
+import { type Address, isAddress } from "viem"
 
 export type ProductIdentity = {
   name: string
@@ -32,4 +32,3 @@ export function resolveEnvValue(env: Record<string, string | undefined>, names: 
   }
   return undefined
 }
-

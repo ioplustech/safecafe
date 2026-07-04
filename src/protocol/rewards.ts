@@ -1,4 +1,4 @@
-import { getAddress, type Address, type Hex } from "viem"
+import { type Address, getAddress, type Hex } from "viem"
 import { DEFAULT_REWARDS_BASE_URL, DEFAULT_REWARDS_BASE_URLS } from "./contracts"
 
 export type RewardProof = {
@@ -30,13 +30,7 @@ export function validateRewardProof(input: unknown): RewardProof {
     throw new Error("Invalid cumulativeAmount")
   }
   if (!isHex32(value.merkleRoot)) throw new Error("Invalid merkleRoot")
-  if (
-    value.proof !== null &&
-    !(
-      Array.isArray(value.proof) &&
-      value.proof.every((entry) => isHex32(entry))
-    )
-  ) {
+  if (value.proof !== null && !(Array.isArray(value.proof) && value.proof.every((entry) => isHex32(entry)))) {
     throw new Error("Invalid proof")
   }
   return value as RewardProof

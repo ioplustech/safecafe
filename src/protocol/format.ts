@@ -1,4 +1,4 @@
-import { formatUnits, type Address } from "viem"
+import { type Address, formatUnits } from "viem"
 
 export function formatSafe(value: bigint, digits = 2): string {
   const raw = Number(formatUnits(value, 18))

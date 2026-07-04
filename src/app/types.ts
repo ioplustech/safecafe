@@ -1,6 +1,6 @@
 import type { TxPlanAction, ValidatorInfo } from "../protocol"
 
-export const navItems = ["dashboard", "stake", "unstake", "rewards", "validators", "settings"] as const
+export const navItems = ["dashboard", "stake", "unstake", "withdrawals", "rewards", "validators", "settings"] as const
 
 export type NavItem = (typeof navItems)[number]
 export type Action = TxPlanAction

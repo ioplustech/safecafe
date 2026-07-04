@@ -9,10 +9,7 @@ export const CONTRACTS = {
   multicall3: "0xcA11bde05977b3631167028862bE2a173976CA11" as Address,
 }
 
-export const DEFAULT_RPC_URLS = [
-  "https://eth.llamarpc.com",
-  "https://ethereum-rpc.publicnode.com",
-]
+export const DEFAULT_RPC_URLS = ["https://eth.llamarpc.com", "https://ethereum-rpc.publicnode.com"]
 
 export const DEFAULT_VALIDATOR_INFO_URL =
   "https://raw.githubusercontent.com/safe-fndn/safenet-beta-data/refs/heads/main/assets/validator-info.json"

@@ -17,10 +17,14 @@
     "preview": "vite preview --host 0.0.0.0",
     "cloudflare:preview": "pnpm build:web && wrangler pages dev dist",
     "cloudflare:deploy": "pnpm build:web && wrangler pages deploy dist --project-name safecafe",
+    "ipfs:publish": "node scripts/publish-ipfs.mjs",
+    "ipfs:publish:dist": "node scripts/publish-ipfs.mjs --skip-build",
+    "ipfs:sync-records": "node scripts/publish-ipfs.mjs --sync-records",
     "cli": "node scripts/run-cli.mjs",
     "cli:packed": "node scripts/run-cli.mjs --command node --entry cli/dist/index.js",
     "cli:bun": "node scripts/run-cli.mjs --command bun --entry cli/index.ts",
-    "check": "tsc -b --noEmit",
+    "check": "tsc -b --noEmit && biome check .",
+    "format": "biome check --write .",
     "test:integration": "pnpm build:cli && node scripts/integration-test.mjs",
     "test:system": "pnpm build && node scripts/system-test.mjs"
   },
@@ -36,6 +40,8 @@
     "vite": "7.3.2"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.5.2",
+    "@filebase/sdk": "1.0.6",
     "@types/node": "24.10.13",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
@@ -43,7 +49,11 @@
     "wrangler": "4.90.0"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["esbuild", "sharp", "workerd"]
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "sharp",
+      "workerd"
+    ]
   },
   "packageManager": "pnpm@11.0.0-rc.0"
 }

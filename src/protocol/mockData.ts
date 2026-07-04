@@ -52,34 +52,3 @@ export const mockValidators: ValidatorInfo[] = [
     userStake: 0n,
   },
 ]
-
-export const recentActivity = [
-  {
-    action: "Stake",
-    description: "Stake 1,000.00 SAFE to Core Contributors",
-    reference: "Safe TX #182",
-    status: "queued",
-    age: "2h ago",
-  },
-  {
-    action: "Rewards Claimed",
-    description: "Claimed 50.00 SAFE rewards",
-    reference: "Tx 0x7a3b...8c49",
-    status: "confirmed",
-    age: "1d ago",
-  },
-  {
-    action: "Unstake Initiated",
-    description: "Unstake 500.00 SAFE from Gnosis",
-    reference: "Safe TX #179",
-    status: "queued",
-    age: "2d ago",
-  },
-  {
-    action: "Unstake Failed",
-    description: "Insufficient stake on validator",
-    reference: "Tx 0x4f2a...9d1e",
-    status: "failed",
-    age: "2d ago",
-  },
-]

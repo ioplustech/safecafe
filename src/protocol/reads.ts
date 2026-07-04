@@ -110,10 +110,7 @@ export async function readValidatorPositions(
   })
 }
 
-export async function readValidatorTotals(
-  client: PublicClient,
-  validators: ValidatorInfo[],
-): Promise<ValidatorInfo[]> {
+export async function readValidatorTotals(client: PublicClient, validators: ValidatorInfo[]): Promise<ValidatorInfo[]> {
   const contracts = validators.map((validator) => ({
     address: CONTRACTS.staking,
     abi: stakingAbi,

@@ -1,5 +1,5 @@
-import { privateKeyToAccount } from "viem/accounts"
 import type { Address } from "viem"
+import { privateKeyToAccount } from "viem/accounts"
 import {
   fetchRewardProof,
   fetchValidators,
@@ -13,6 +13,7 @@ import {
   type TxPlan,
 } from "../src/protocol"
 import {
+  type CliGlobalOptions,
   createProductPublicClient,
   output,
   printPlan,
@@ -20,7 +21,6 @@ import {
   resolveRpcUrl,
   sendPlanTransactions,
   writeSafePayloadFile,
-  type CliGlobalOptions,
 } from "../src/shared/cli"
 import { parseAddress } from "../src/shared/utils"
 
@@ -67,21 +67,30 @@ function tryParseAddress(value: string): Address | null {
   }
 }
 
-export async function assertStakePossible(globals: GlobalOptions, account: Address, validator: Address, amountText: string) {
+export async function assertStakePossible(
+  globals: GlobalOptions,
+  account: Address,
+  validator: Address,
+  amountText: string,
+) {
   const amount = parseSafeAmount(amountText)
   const client = createClient(globals)
-  const [snapshot, validators] = await Promise.all([
-    readAccountSnapshot(client, account),
-    fetchValidators(),
-  ])
+  const [snapshot, validators] = await Promise.all([readAccountSnapshot(client, account), fetchValidators()])
   const validatorMetadata = findValidator(validators, validator)
   if (validatorMetadata?.status === "inactive") throw new Error(`Validator is inactive: ${validatorMetadata.label}`)
   if (snapshot.safeBalance < amount) {
-    throw new Error(`Insufficient SAFE balance. Need ${formatSafe(amount, 6)}, have ${formatSafe(snapshot.safeBalance, 6)}.`)
+    throw new Error(
+      `Insufficient SAFE balance. Need ${formatSafe(amount, 6)}, have ${formatSafe(snapshot.safeBalance, 6)}.`,
+    )
   }
 }
 
-export async function assertUnstakePossible(globals: GlobalOptions, account: Address, validator: Address, amountText: string) {
+export async function assertUnstakePossible(
+  globals: GlobalOptions,
+  account: Address,
+  validator: Address,
+  amountText: string,
+) {
   const amount = parseSafeAmount(amountText)
   const [position] = await readValidatorPositions(createClient(globals), account, [
     {
@@ -95,7 +104,9 @@ export async function assertUnstakePossible(globals: GlobalOptions, account: Add
     },
   ])
   if (position.userStake < amount) {
-    throw new Error(`Insufficient validator stake. Need ${formatSafe(amount, 6)}, have ${formatSafe(position.userStake, 6)}.`)
+    throw new Error(
+      `Insufficient validator stake. Need ${formatSafe(amount, 6)}, have ${formatSafe(position.userStake, 6)}.`,
+    )
   }
 }
 
@@ -116,8 +127,9 @@ export async function assertRewardsClaimable(globals: GlobalOptions, account: Ad
     readAccountSnapshot(client, account),
     readHealth(client),
   ])
-  if (!proof || !proof.proof) throw new Error("No reward proof found for account.")
-  if (proof.merkleRoot.toLowerCase() !== health.merkleRoot.toLowerCase()) throw new Error("Reward proof Merkle root does not match the live contract root.")
+  if (!proof?.proof) throw new Error("No reward proof found for account.")
+  if (proof.merkleRoot.toLowerCase() !== health.merkleRoot.toLowerCase())
+    throw new Error("Reward proof Merkle root does not match the live contract root.")
   const cumulativeAmount = BigInt(proof.cumulativeAmount)
   if (cumulativeAmount <= snapshot.cumulativeClaimed) throw new Error("Rewards are already fully claimed.")
 }
@@ -162,7 +174,9 @@ export async function handlePlan(globals: GlobalOptions, plan: TxPlan, options: 
   }
 
   console.error("Safecafe will submit live transactions from the local EOA account.")
-  console.error("The private key is used in memory for this run only; prefer --private-key-prompt or --private-key-stdin.")
+  console.error(
+    "The private key is used in memory for this run only; prefer --private-key-prompt or --private-key-stdin.",
+  )
   await sendPlanTransactions(plan, {
     privateKey,
     rpcUrl: resolveRpcUrl(globals, process.env, rpcEnvNames),

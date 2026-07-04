@@ -1,28 +1,30 @@
 import {
+  ArrowDownToLine,
+  ChevronDown,
+  CircleAlert,
+  CircleCheck,
   Database,
   Gift,
   Home,
+  Info,
   Languages,
   Menu,
   Settings,
   Shield,
-  CircleAlert,
-  CircleCheck,
-  Info,
   Upload,
   Users,
   Wallet,
   X,
-  ChevronDown,
 } from "lucide-react"
-import { useEffect, useMemo, useState } from "react"
-import { createWalletClient, custom, type Address } from "viem"
+import { useCallback, useEffect, useMemo, useState } from "react"
+import { type Address, createWalletClient, custom } from "viem"
 import { mainnet } from "viem/chains"
 import {
+  type AccountSnapshot,
   CHAIN_ID,
-  EXPLORER_BASE_URL,
   compactAddress,
   createSafenetPublicClient,
+  EXPLORER_BASE_URL,
   fetchRewardProof,
   fetchSafeUsdPrice,
   fetchValidators,
@@ -36,12 +38,12 @@ import {
   readValidatorPositions,
   readValidatorTotals,
   SAFE_PRICE_CACHE_MS,
-  toSafeTransactionPayload,
-  type AccountSnapshot,
   type TxPlan,
+  toSafeTransactionPayload,
   type ValidatorInfo,
 } from "../protocol"
 import { createPathMap, navFromPath as resolveNavFromPath } from "../shared"
+import { SAFECAFE_VERSION } from "../shared/version"
 import { DetailModal } from "./DetailModal"
 import {
   priceStatusLabel,
@@ -50,21 +52,21 @@ import {
   stringifyBigInts,
   translateTxLabel,
 } from "./formatters"
-import { messages, type Locale } from "./i18n"
+import { type Locale, messages } from "./i18n"
 import { readCachedSafePrice, writeCachedSafePrice } from "./priceCache"
-import { FullPanel, Metric } from "./ui"
 import {
-  defaultValidator,
-  emptySummary,
-  navItems,
   type Action,
   type DataStatus,
+  defaultValidator,
+  emptySummary,
   type Modal,
   type NavItem,
+  navItems,
   type SafePriceState,
   type Toast,
 } from "./types"
-import { DashboardView, DocsView, RewardsView, ValidatorTable, ValidatorToolbar } from "./views"
+import { FullPanel, Metric } from "./ui"
+import { DashboardView, DocsView, RewardsView, ValidatorTable, ValidatorToolbar, WithdrawalsView } from "./views"
 
 const navPaths = createPathMap(navItems)
 type ValidatorSort = "stake" | "participation" | "commission" | "name" | "yourStake"
@@ -74,6 +76,7 @@ const navMeta: Record<NavItem, { label: string; icon: typeof Home }> = {
   dashboard: { label: "Dashboard", icon: Home },
   stake: { label: "Stake", icon: Database },
   unstake: { label: "Unstake", icon: Upload },
+  withdrawals: { label: "Withdrawals", icon: ArrowDownToLine },
   rewards: { label: "Rewards", icon: Gift },
   validators: { label: "Validators", icon: Users },
   settings: { label: "Settings", icon: Settings },
@@ -124,7 +127,8 @@ export function App() {
     const query = validatorQuery.trim().toLowerCase()
     const filtered = validators.filter((item) => {
       const activeMatch = !showOnlyActive || item.status === "active"
-      const queryMatch = !query || item.label.toLowerCase().includes(query) || item.address.toLowerCase().includes(query)
+      const queryMatch =
+        !query || item.label.toLowerCase().includes(query) || item.address.toLowerCase().includes(query)
       return activeMatch && queryMatch
     })
     return [...filtered].sort((a, b) => {
@@ -135,10 +139,7 @@ export function App() {
       return compareBigintDesc(a.totalStake, b.totalStake)
     })
   }, [showOnlyActive, validatorQuery, validatorSort, validators])
-  const validatorPoolTotal = useMemo(
-    () => validators.reduce((sum, item) => sum + item.totalStake, 0n),
-    [validators],
-  )
+  const validatorPoolTotal = useMemo(() => validators.reduce((sum, item) => sum + item.totalStake, 0n), [validators])
   const dashboardValidators = useMemo(
     () => [...validators].sort((a, b) => compareBigintDesc(a.totalStake, b.totalStake)),
     [validators],
@@ -159,9 +160,7 @@ export function App() {
   }, [liveRewards, liveSnapshot])
   const dataStatus: DataStatus = useMemo(() => {
     const merkleRootMatched =
-      rewardProof && liveMerkleRoot
-        ? rewardProof.merkleRoot.toLowerCase() === liveMerkleRoot.toLowerCase()
-        : null
+      rewardProof && liveMerkleRoot ? rewardProof.merkleRoot.toLowerCase() === liveMerkleRoot.toLowerCase() : null
     return {
       chainId,
       isLive: Boolean(liveSnapshot),
@@ -172,12 +171,36 @@ export function App() {
       rewardsSource: rewardProof ? t.proofLoaded : liveSnapshot ? t.proofMissing : t.notChecked,
       validatorCount: validators.length,
       validatorStakeOk: validators.length > 0 && validatorPoolTotal > 0n && !validatorStakeError,
-      validatorStakeStatus: validatorStakeError || (validators.length === 0 ? t.notChecked : validatorPoolTotal > 0n ? t.ready : t.validatorStakeUnavailable),
+      validatorStakeStatus:
+        validatorStakeError ||
+        (validators.length === 0 ? t.notChecked : validatorPoolTotal > 0n ? t.ready : t.validatorStakeUnavailable),
     }
-  }, [chainId, liveBlock, liveError, liveMerkleRoot, liveSnapshot, rewardProof, t, validatorPoolTotal, validatorStakeError, validators.length])
+  }, [
+    chainId,
+    liveBlock,
+    liveError,
+    liveMerkleRoot,
+    liveSnapshot,
+    rewardProof,
+    t,
+    validatorPoolTotal,
+    validatorStakeError,
+    validators.length,
+  ])
   const displaySummary = hasLiveAccountData ? summary : emptySummary
   const displayValidators = visibleValidators
   const displaySafePriceUsd = safePrice.usd
+
+  const toast = useCallback((message: string, tone: Toast["tone"] = "info", title?: string) => {
+    const id = Date.now() + Math.random()
+    setToasts((current) => [...current.slice(-3), { id, message, tone, title }])
+    window.setTimeout(
+      () => {
+        setToasts((current) => current.filter((item) => item.id !== id))
+      },
+      message.length > 120 ? 6200 : 3600,
+    )
+  }, [])
 
   useEffect(() => {
     const handlePopState = () => setActiveNav(navFromPath(window.location.pathname))
@@ -193,62 +216,123 @@ export function App() {
       return
     }
 
-    fetchSafeUsdPrice().then((price) => {
-      if (cancelled) return
-      const nextPrice: SafePriceState = {
-        usd: price.usd,
-        source: price.source,
-        fetchedAt: price.fetchedAt,
-        stale: false,
-        error: "",
-      }
-      writeCachedSafePrice(nextPrice)
-      setSafePrice(nextPrice)
-    }).catch((error) => {
-      if (cancelled) return
-      setSafePrice({
-        ...cached,
-        stale: cached.usd !== null,
-        error: error instanceof Error ? error.message : t.priceUnavailable,
+    fetchSafeUsdPrice()
+      .then((price) => {
+        if (cancelled) return
+        const nextPrice: SafePriceState = {
+          usd: price.usd,
+          source: price.source,
+          fetchedAt: price.fetchedAt,
+          stale: false,
+          error: "",
+        }
+        writeCachedSafePrice(nextPrice)
+        setSafePrice(nextPrice)
       })
-    })
+      .catch((error) => {
+        if (cancelled) return
+        setSafePrice({
+          ...cached,
+          stale: cached.usd !== null,
+          error: error instanceof Error ? error.message : t.priceUnavailable,
+        })
+      })
 
     return () => {
       cancelled = true
     }
   }, [t.priceUnavailable])
 
-  useEffect(() => {
+  const updateAmount = useCallback((nextAmount: string) => {
+    setAmount(nextAmount)
     setTxPlan(null)
-  }, [amount, validator])
+  }, [])
+
+  const updateValidator = useCallback((nextValidator: Address) => {
+    setValidator(nextValidator)
+    setTxPlan(null)
+  }, [])
 
   useEffect(() => {
     setIsLoadingValidators(true)
     setValidatorLoadError("")
-    fetchValidators(undefined, { fallback: false }).then(async (items) => {
-      const client = createSafenetPublicClient(import.meta.env.VITE_RPC_URL)
-      setValidatorStakeError("")
-      const validatorsWithTotals = await readValidatorTotals(client, items).catch((error) => {
-        setValidatorStakeError(error instanceof Error ? error.message : t.validatorStakeUnavailable)
-        return items
+    fetchValidators(undefined, { fallback: false })
+      .then(async (items) => {
+        const client = createSafenetPublicClient(import.meta.env.VITE_RPC_URL)
+        setValidatorStakeError("")
+        const validatorsWithTotals = await readValidatorTotals(client, items).catch((error) => {
+          setValidatorStakeError(error instanceof Error ? error.message : t.validatorStakeUnavailable)
+          return items
+        })
+        setValidators(validatorsWithTotals)
+        setValidator(
+          (current) =>
+            findValidator(validatorsWithTotals, current)?.address ?? validatorsWithTotals[0]?.address ?? current,
+        )
       })
-      setValidators(validatorsWithTotals)
-      setValidator((current) => findValidator(validatorsWithTotals, current)?.address ?? validatorsWithTotals[0]?.address ?? current)
-    }).catch((error) => {
-      const message = error instanceof Error ? error.message : t.validatorInfoFailed
-      setValidatorLoadError(message)
-      toast(message, "warning")
-    }).finally(() => {
-      setIsLoadingValidators(false)
-    })
-  }, [t.validatorInfoFailed])
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : t.validatorInfoFailed
+        setValidatorLoadError(message)
+        toast(message, "warning")
+      })
+      .finally(() => {
+        setIsLoadingValidators(false)
+      })
+  }, [t.validatorInfoFailed, t.validatorStakeUnavailable, toast])
+
+  const refreshLiveReads = useCallback(
+    async (target = account) => {
+      if (!target) {
+        toast(t.connectToLoad, "warning")
+        return
+      }
+      setIsReadingLive(true)
+      setLiveError("")
+      try {
+        const client = createSafenetPublicClient(import.meta.env.VITE_RPC_URL)
+        const [snapshot, health, validatorMetadata] = await Promise.all([
+          readAccountSnapshot(client, target),
+          readHealth(client),
+          fetchValidators(undefined, { fallback: false }),
+        ])
+        setLiveSnapshot(snapshot)
+        setLiveBlock(health.blockNumber)
+        setLiveMerkleRoot(health.merkleRoot)
+        setValidatorLoadError("")
+        setValidators(await readValidatorPositions(client, target, validatorMetadata))
+
+        try {
+          const proof = await fetchRewardProof(target)
+          setRewardProof(proof)
+          const cumulativeAmount = proof ? BigInt(proof.cumulativeAmount) : 0n
+          setLiveRewards(
+            cumulativeAmount > snapshot.cumulativeClaimed ? cumulativeAmount - snapshot.cumulativeClaimed : 0n,
+          )
+        } catch {
+          setRewardProof(null)
+          setLiveRewards(0n)
+        }
+
+        toast(t.liveLoaded, "success")
+      } catch (error) {
+        const message = error instanceof Error ? error.message : t.liveDataFailed
+        setLiveError(message)
+        toast(message, "warning")
+      } finally {
+        setIsReadingLive(false)
+      }
+    },
+    [account, t.connectToLoad, t.liveDataFailed, t.liveLoaded, toast],
+  )
 
   useEffect(() => {
     if (!window.ethereum) return
-    window.ethereum.request({ method: "eth_chainId" })
+    window.ethereum
+      .request({ method: "eth_chainId" })
       .then((value) => setChainId(Number.parseInt(value as string, 16)))
       .catch(() => undefined)
-    window.ethereum.request({ method: "eth_accounts" })
+    window.ethereum
+      .request({ method: "eth_accounts" })
       .then(async (accounts) => {
         const [first] = accounts as Address[]
         if (!first) return
@@ -268,7 +352,8 @@ export function App() {
     }
     const handleChainChanged = (value: unknown) => {
       setChainId(Number.parseInt(value as string, 16))
-      window.ethereum?.request({ method: "eth_accounts" })
+      window.ethereum
+        ?.request({ method: "eth_accounts" })
         .then((accounts) => {
           const [first] = accounts as Address[]
           if (first) void refreshLiveReads(first)
@@ -281,15 +366,7 @@ export function App() {
       window.ethereum?.removeListener?.("accountsChanged", handleAccountsChanged)
       window.ethereum?.removeListener?.("chainChanged", handleChainChanged)
     }
-  }, [])
-
-  function toast(message: string, tone: Toast["tone"] = "info", title?: string) {
-    const id = Date.now() + Math.random()
-    setToasts((current) => [...current.slice(-3), { id, message, tone, title }])
-    window.setTimeout(() => {
-      setToasts((current) => current.filter((item) => item.id !== id))
-    }, message.length > 120 ? 6200 : 3600)
-  }
+  }, [refreshLiveReads])
 
   function closeToast(id: number) {
     setToasts((current) => current.filter((item) => item.id !== id))
@@ -306,6 +383,7 @@ export function App() {
     setIsMenuOpen(false)
     if (nextNav === "stake") setAction("stake")
     if (nextNav === "unstake") setAction("unstake")
+    if (nextNav === "withdrawals") setAction("claim-withdrawal")
     if (nextNav === "rewards") setAction("claim-rewards")
     const nextPath = navPaths[nextNav]
     if (window.location.pathname !== nextPath) {
@@ -360,46 +438,6 @@ export function App() {
       return
     }
     await refreshLiveReads(account)
-  }
-
-  async function refreshLiveReads(target = account) {
-    if (!target) {
-      toast(t.connectToLoad, "warning")
-      return
-    }
-    setIsReadingLive(true)
-    setLiveError("")
-    try {
-      const client = createSafenetPublicClient(import.meta.env.VITE_RPC_URL)
-      const [snapshot, health, validatorMetadata] = await Promise.all([
-        readAccountSnapshot(client, target),
-        readHealth(client),
-        fetchValidators(undefined, { fallback: false }),
-      ])
-      setLiveSnapshot(snapshot)
-      setLiveBlock(health.blockNumber)
-      setLiveMerkleRoot(health.merkleRoot)
-      setValidatorLoadError("")
-      setValidators(await readValidatorPositions(client, target, validatorMetadata))
-
-      try {
-        const proof = await fetchRewardProof(target)
-        setRewardProof(proof)
-        const cumulativeAmount = proof ? BigInt(proof.cumulativeAmount) : 0n
-        setLiveRewards(cumulativeAmount > snapshot.cumulativeClaimed ? cumulativeAmount - snapshot.cumulativeClaimed : 0n)
-      } catch {
-        setRewardProof(null)
-        setLiveRewards(0n)
-      }
-
-      toast(t.liveLoaded, "success")
-    } catch (error) {
-      const message = error instanceof Error ? error.message : t.liveDataFailed
-      setLiveError(message)
-      toast(message, "warning")
-    } finally {
-      setIsReadingLive(false)
-    }
   }
 
   async function buildPlan(nextAction = action) {
@@ -552,7 +590,8 @@ export function App() {
     if (targetAction === "claim-withdrawal" && summary.claimableWithdrawals <= 0n) return t.noClaimableWithdrawal
     if (targetAction === "claim-rewards") {
       if (!rewardProof?.proof || (liveRewards ?? 0n) <= 0n) return t.noProof
-      if (liveMerkleRoot && rewardProof.merkleRoot.toLowerCase() !== liveMerkleRoot.toLowerCase()) return t.merkleMismatch
+      if (liveMerkleRoot && rewardProof.merkleRoot.toLowerCase() !== liveMerkleRoot.toLowerCase())
+        return t.merkleMismatch
     }
     return null
   }
@@ -602,8 +641,10 @@ export function App() {
     <div className="app-shell">
       <header className="topbar">
         <div className="topbar-inner">
-          <button className="brand" onClick={() => navigate("dashboard")} aria-label="Safecafe dashboard">
-            <div className="brand-mark"><span>S</span></div>
+          <button type="button" className="brand" onClick={() => navigate("dashboard")} aria-label="Safecafe dashboard">
+            <div className="brand-mark">
+              <span>S</span>
+            </div>
             <div>
               <strong>SAFECAFE</strong>
               <span>STAKING</span>
@@ -611,11 +652,22 @@ export function App() {
           </button>
 
           <div className="mobile-header-actions">
-            <button className="mobile-wallet-button" onClick={() => account ? setModal({ type: "wallet" }) : connectWallet()} aria-label={account ? t.wallet : t.connectWallet}>
+            <button
+              type="button"
+              className="mobile-wallet-button"
+              onClick={() => (account ? setModal({ type: "wallet" }) : connectWallet())}
+              aria-label={account ? t.wallet : t.connectWallet}
+            >
               <Wallet size={17} />
               <span>{account ? compactAddress(account, 5, 4) : t.connectWallet}</span>
             </button>
-            <button className="menu-button" onClick={() => setIsMenuOpen((value) => !value)} aria-expanded={isMenuOpen} aria-label={t.menu}>
+            <button
+              type="button"
+              className="menu-button"
+              onClick={() => setIsMenuOpen((value) => !value)}
+              aria-expanded={isMenuOpen}
+              aria-label={t.menu}
+            >
               {isMenuOpen ? <X size={20} /> : <Menu size={20} />}
             </button>
           </div>
@@ -625,7 +677,12 @@ export function App() {
               {navItems.map((item) => {
                 const Icon = navMeta[item].icon
                 return (
-                  <button className={activeNav === item ? "active" : ""} key={item} onClick={() => navigate(item)}>
+                  <button
+                    type="button"
+                    className={activeNav === item ? "active" : ""}
+                    key={item}
+                    onClick={() => navigate(item)}
+                  >
                     <Icon size={20} />
                     {t[item]}
                   </button>
@@ -633,12 +690,16 @@ export function App() {
               })}
             </nav>
 
-          <div className="topbar-status">
-              <button className="language-pill" onClick={switchLocale} aria-label={t.switchLanguage}>
+            <div className="topbar-status">
+              <button type="button" className="language-pill" onClick={switchLocale} aria-label={t.switchLanguage}>
                 <Languages size={17} />
                 <span>{locale === "en" ? "中文" : "EN"}</span>
               </button>
-              <button className="wallet-pill" onClick={() => account ? setModal({ type: "wallet" }) : connectWallet()}>
+              <button
+                type="button"
+                className="wallet-pill"
+                onClick={() => (account ? setModal({ type: "wallet" }) : connectWallet())}
+              >
                 <Wallet size={18} />
                 <span>
                   <strong>{account ? compactAddress(account, 6, 4) : t.connectWallet}</strong>
@@ -653,7 +714,7 @@ export function App() {
             <strong>Safecafe</strong>
             <ChevronDown size={17} />
           </div>
-          <span className="sidebar-version">Version 1.0.0-beta</span>
+          <span className="sidebar-version">Version {SAFECAFE_VERSION}</span>
         </div>
       </header>
 
@@ -672,7 +733,7 @@ export function App() {
                 <strong>{safePrice.usd === null ? t.priceUnavailable : `$${safePrice.usd.toFixed(3)}`}</strong>
                 <small>{priceStatusLabel(safePrice, t)}</small>
               </div>
-              <button className="soft-button" disabled={isReadingLive} onClick={refreshOrConnect}>
+              <button type="button" className="soft-button" disabled={isReadingLive} onClick={refreshOrConnect}>
                 <Database size={16} />
                 {isReadingLive ? t.reading : t.refreshLive}
               </button>
@@ -686,13 +747,33 @@ export function App() {
                 <strong>{t.connectWallet}</strong>
                 <small>{t.connectWalletHint}</small>
               </div>
-              <button className="primary-button" onClick={connectWallet}>{t.connectWallet}</button>
+              <button type="button" className="primary-button" onClick={connectWallet}>
+                {t.connectWallet}
+              </button>
             </div>
           )}
           <div className="summary-grid">
-            <Metric icon={<Database />} label={t.safeBalance} value={hasLiveAccountData ? displaySummary.safeBalance : null} unavailable={t.connectWallet} safePriceUsd={displaySafePriceUsd} />
-            <Metric icon={<Wallet />} label={t.totalStaked} value={hasLiveAccountData ? displaySummary.totalStaked : null} unavailable={t.connectWallet} safePriceUsd={displaySafePriceUsd} />
-            <Metric icon={<Gift />} label={t.claimableRewards} value={hasLiveAccountData ? displaySummary.claimableRewards : null} unavailable={t.connectWallet} safePriceUsd={displaySafePriceUsd} />
+            <Metric
+              icon={<Database />}
+              label={t.safeBalance}
+              value={hasLiveAccountData ? displaySummary.safeBalance : null}
+              unavailable={t.connectWallet}
+              safePriceUsd={displaySafePriceUsd}
+            />
+            <Metric
+              icon={<Wallet />}
+              label={t.totalStaked}
+              value={hasLiveAccountData ? displaySummary.totalStaked : null}
+              unavailable={t.connectWallet}
+              safePriceUsd={displaySafePriceUsd}
+            />
+            <Metric
+              icon={<Gift />}
+              label={t.claimableRewards}
+              value={hasLiveAccountData ? displaySummary.claimableRewards : null}
+              unavailable={t.connectWallet}
+              safePriceUsd={displaySafePriceUsd}
+            />
           </div>
         </section>
 
@@ -713,9 +794,9 @@ export function App() {
             selectAction={selectAction}
             selectedValidator={selectedValidator}
             setActiveNav={navigate}
-            setAmount={setAmount}
+            setAmount={updateAmount}
             setModal={setModal}
-            setValidator={setValidator}
+            setValidator={updateValidator}
             showOnlyActive={showOnlyActive}
             submitPlan={submitPlan}
             txProgress={txProgress}
@@ -753,18 +834,20 @@ export function App() {
               validators={displayValidators}
               totalStaked={validatorPoolTotal}
               accountReady={hasLiveAccountData}
-              emptyMessage={validatorQuery || showOnlyActive ? t.noValidatorsMatched : validatorLoadError || t.validatorInfoFailed}
+              emptyMessage={
+                validatorQuery || showOnlyActive ? t.noValidatorsMatched : validatorLoadError || t.validatorInfoFailed
+              }
               isLoading={isLoadingValidators}
               setModal={setModal}
               openExplorer={openExplorer}
               safePriceUsd={displaySafePriceUsd}
               onStake={(nextValidator) => {
-                setValidator(nextValidator)
+                updateValidator(nextValidator)
                 selectAction("stake")
                 navigate("stake")
               }}
               onUnstake={(nextValidator) => {
-                setValidator(nextValidator)
+                updateValidator(nextValidator)
                 selectAction("unstake")
                 navigate("unstake")
               }}
@@ -787,13 +870,32 @@ export function App() {
             txProgress={txProgress}
           />
         )}
+        {activeNav === "withdrawals" && (
+          <WithdrawalsView
+            account={connectedAccount}
+            copyText={copyText}
+            t={t}
+            exportSafePayload={exportSafePayload}
+            isSubmitting={isSubmitting}
+            selectAction={selectAction}
+            selectedValidator={selectedValidator}
+            summary={displaySummary}
+            submitPlan={submitPlan}
+            txPlan={txPlan?.action === "claim-withdrawal" ? txPlan : null}
+            txProgress={txProgress}
+          />
+        )}
         {activeNav === "settings" && <DocsView t={t} />}
       </main>
 
       <footer className="footer">
-        <button onClick={() => toast("Safecafe v0.1.0", "info")}>Safecafe v0.1.0</button>
+        <button type="button" onClick={() => toast(`Safecafe v${SAFECAFE_VERSION}`, "info")}>
+          Safecafe v{SAFECAFE_VERSION}
+        </button>
         <span>{t.footerTagline}</span>
-        <button onClick={() => navigate("settings")}>{t.docsTitle}</button>
+        <button type="button" onClick={() => navigate("settings")}>
+          {t.docsTitle}
+        </button>
       </footer>
 
       {modal && (
@@ -810,7 +912,13 @@ export function App() {
       )}
       <div className="toast-stack" aria-live="polite">
         {toasts.map((item) => (
-          <ToastItem closeLabel={t.closeNotification} item={item} key={item.id} notificationLabel={t.notification} onClose={() => closeToast(item.id)} />
+          <ToastItem
+            closeLabel={t.closeNotification}
+            item={item}
+            key={item.id}
+            notificationLabel={t.notification}
+            onClose={() => closeToast(item.id)}
+          />
         ))}
       </div>
     </div>
