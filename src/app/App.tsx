@@ -71,6 +71,11 @@ import { DashboardView, DocsView, RewardsView, ValidatorTable, ValidatorToolbar,
 
 const navPaths = createPathMap(navItems)
 type ValidatorSort = "stake" | "participation" | "commission" | "name" | "yourStake"
+type LiveReadResult = {
+  health: Awaited<ReturnType<typeof readHealth>>
+  snapshot: AccountSnapshot
+  validatorsWithPositions: ValidatorInfo[]
+}
 
 const navFromPath = (pathname: string): NavItem => resolveNavFromPath(pathname, navItems, navPaths, "dashboard")
 const navMeta: Record<NavItem, { label: string; icon: typeof Home }> = {
@@ -295,17 +300,12 @@ export function App() {
       setIsReadingLive(true)
       setLiveError("")
       try {
-        const client = createSafenetPublicClient(import.meta.env.VITE_RPC_URL)
-        const [snapshot, health, validatorMetadata] = await Promise.all([
-          readAccountSnapshot(client, target),
-          readHealth(client),
-          fetchValidators(undefined, { fallback: false }),
-        ])
+        const { health, snapshot, validatorsWithPositions } = await readLiveData(target)
         setLiveSnapshot(snapshot)
         setLiveBlock(health.blockNumber)
         setLiveMerkleRoot(health.merkleRoot)
         setValidatorLoadError("")
-        setValidators(await readValidatorPositions(client, target, validatorMetadata))
+        setValidators(validatorsWithPositions)
 
         try {
           const proof = await fetchRewardProof(target)
@@ -973,6 +973,32 @@ function ToastItem(props: { closeLabel: string; item: Toast; notificationLabel: 
       </button>
     </div>
   )
+}
+
+const liveReadCache = new Map<string, Promise<LiveReadResult>>()
+
+async function readLiveData(account: Address): Promise<LiveReadResult> {
+  const cacheKey = `${account.toLowerCase()}:${import.meta.env.VITE_RPC_URL ?? ""}`
+  const cached = liveReadCache.get(cacheKey)
+  if (cached) return cached
+
+  const request = (async () => {
+    const client = createSafenetPublicClient(import.meta.env.VITE_RPC_URL)
+    const [snapshot, health, validatorMetadata] = await Promise.all([
+      readAccountSnapshot(client, account),
+      readHealth(client),
+      fetchValidators(undefined, { fallback: false }),
+    ])
+    const validatorsWithPositions = await readValidatorPositions(client, account, validatorMetadata)
+    return { health, snapshot, validatorsWithPositions }
+  })()
+
+  liveReadCache.set(cacheKey, request)
+  try {
+    return await request
+  } finally {
+    liveReadCache.delete(cacheKey)
+  }
 }
 
 function compareBigintDesc(a: bigint, b: bigint) {

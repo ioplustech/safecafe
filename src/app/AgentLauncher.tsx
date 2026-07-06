@@ -1,8 +1,8 @@
-import { MessageCircle } from "lucide-react"
 import { useCallback, useEffect, useRef, useState } from "react"
 import type { AgentContext } from "../agent"
 import type { TxPlan } from "../protocol"
 import { AgentChatDialog } from "./AgentChatDialog"
+import { AgentLogo } from "./AgentLogo"
 import type { MessageBundle } from "./i18n"
 
 const storageKey = "safecafe:agent-launcher-position"
@@ -114,7 +114,7 @@ export function AgentLauncher(props: AgentLauncherProps) {
           }
         }}
       >
-        <MessageCircle size={23} strokeWidth={2.2} />
+        <AgentLogo size="lg" />
         <span className="agent-launcher-dot" />
       </button>
       <AgentChatDialog

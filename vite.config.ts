@@ -20,6 +20,7 @@ export default defineConfig({
             body: req.method === "GET" || req.method === "HEAD" ? undefined : Buffer.concat(chunks),
           })
           const response = await handleAgentApiRequest(request, {
+            SAFECAFE_RPC_URL: process.env.SAFECAFE_RPC_URL,
             SAFECAFE_LLM_API_BASE: process.env.SAFECAFE_LLM_API_BASE,
             SAFECAFE_LLM_API_MODEL: process.env.SAFECAFE_LLM_API_MODEL,
             SAFECAFE_LLM_API_KEY: process.env.SAFECAFE_LLM_API_KEY,
@@ -28,7 +29,17 @@ export default defineConfig({
           response.headers.forEach((value, key) => {
             res.setHeader(key, value)
           })
-          res.end(Buffer.from(await response.arrayBuffer()))
+          if (response.body) {
+            const reader = response.body.getReader()
+            for (;;) {
+              const { done, value } = await reader.read()
+              if (done) break
+              res.write(Buffer.from(value))
+            }
+            res.end()
+            return
+          }
+          res.end()
         })
       },
     },

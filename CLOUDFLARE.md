@@ -16,11 +16,15 @@ Create a Cloudflare Pages project connected to the GitHub repository:
 Configure these environment variables before enabling the Staking Agent:
 
 - `VITE_RPC_URL` (optional): browser-safe Ethereum RPC endpoint for live wallet reads. If omitted, the app uses bundled public fallback RPC endpoints.
+- `SAFECAFE_RPC_URL`: server-side Ethereum RPC endpoint used by `/api/agent` to verify that the connected account has SAFE or a SAFE staking position before any remote LLM call.
 - `SAFECAFE_LLM_API_BASE`: OpenAI-compatible chat completions base URL, kept server-side.
 - `SAFECAFE_LLM_API_MODEL`: model name for the Staking Agent.
 - `SAFECAFE_LLM_API_KEY`: server-side API key for the Agent proxy.
 
 `SAFECAFE_LLM_API_KEY` must not be exposed as a `VITE_*` variable. The web app calls the Cloudflare Pages Function at `/api/agent`; the function reads the server-side `SAFECAFE_LLM_*` variables and returns only the Agent response.
+Do not set `SAFECAFE_AGENT_TEST_VERIFIED_ACCESS` in production. It is reserved for automated tests that need to bypass the server-side wallet eligibility check.
+
+For production, put `/api/agent` behind Cloudflare abuse controls such as Rate Limiting Rules and, if traffic grows, Turnstile or a Durable Object quota. The function also performs a server-side SAFE/staking eligibility check before any LLM call, but edge-level rate limits are still the cost-control layer.
 
 ## Direct Upload
 

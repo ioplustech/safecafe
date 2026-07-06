@@ -14,6 +14,52 @@ export type AccountSnapshot = {
 }
 
 export async function readAccountSnapshot(client: PublicClient, account: Address): Promise<AccountSnapshot> {
+  const results = await client.multicall({
+    allowFailure: false,
+    contracts: [
+      {
+        address: CONTRACTS.safeToken,
+        abi: erc20Abi,
+        functionName: "balanceOf",
+        args: [account],
+      },
+      {
+        address: CONTRACTS.staking,
+        abi: stakingAbi,
+        functionName: "totalStakerStakes",
+        args: [account],
+      },
+      {
+        address: CONTRACTS.staking,
+        abi: stakingAbi,
+        functionName: "getPendingWithdrawals",
+        args: [account],
+      },
+      {
+        address: CONTRACTS.staking,
+        abi: stakingAbi,
+        functionName: "getNextClaimableWithdrawal",
+        args: [account],
+      },
+      {
+        address: CONTRACTS.merkleDrop,
+        abi: merkleDropAbi,
+        functionName: "cumulativeClaimed",
+        args: [account],
+      },
+      {
+        address: CONTRACTS.staking,
+        abi: stakingAbi,
+        functionName: "withdrawDelay",
+      },
+      {
+        address: CONTRACTS.safeToken,
+        abi: erc20Abi,
+        functionName: "allowance",
+        args: [account, CONTRACTS.staking],
+      },
+    ],
+  })
   const [
     safeBalance,
     totalStaked,
@@ -22,49 +68,7 @@ export async function readAccountSnapshot(client: PublicClient, account: Address
     cumulativeClaimed,
     withdrawDelay,
     stakingAllowance,
-  ] = await Promise.all([
-    client.readContract({
-      address: CONTRACTS.safeToken,
-      abi: erc20Abi,
-      functionName: "balanceOf",
-      args: [account],
-    }),
-    client.readContract({
-      address: CONTRACTS.staking,
-      abi: stakingAbi,
-      functionName: "totalStakerStakes",
-      args: [account],
-    }),
-    client.readContract({
-      address: CONTRACTS.staking,
-      abi: stakingAbi,
-      functionName: "getPendingWithdrawals",
-      args: [account],
-    }),
-    client.readContract({
-      address: CONTRACTS.staking,
-      abi: stakingAbi,
-      functionName: "getNextClaimableWithdrawal",
-      args: [account],
-    }),
-    client.readContract({
-      address: CONTRACTS.merkleDrop,
-      abi: merkleDropAbi,
-      functionName: "cumulativeClaimed",
-      args: [account],
-    }),
-    client.readContract({
-      address: CONTRACTS.staking,
-      abi: stakingAbi,
-      functionName: "withdrawDelay",
-    }),
-    client.readContract({
-      address: CONTRACTS.safeToken,
-      abi: erc20Abi,
-      functionName: "allowance",
-      args: [account, CONTRACTS.staking],
-    }),
-  ])
+  ] = results
 
   return {
     safeBalance,
@@ -130,17 +134,22 @@ export async function readValidatorTotals(client: PublicClient, validators: Vali
 }
 
 export async function readHealth(client: PublicClient) {
-  const [blockNumber, withdrawDelay, merkleRoot] = await Promise.all([
+  const [blockNumber, [withdrawDelay, merkleRoot]] = await Promise.all([
     client.getBlockNumber(),
-    client.readContract({
-      address: CONTRACTS.staking,
-      abi: stakingAbi,
-      functionName: "withdrawDelay",
-    }),
-    client.readContract({
-      address: CONTRACTS.merkleDrop,
-      abi: merkleDropAbi,
-      functionName: "merkleRoot",
+    client.multicall({
+      allowFailure: false,
+      contracts: [
+        {
+          address: CONTRACTS.staking,
+          abi: stakingAbi,
+          functionName: "withdrawDelay",
+        },
+        {
+          address: CONTRACTS.merkleDrop,
+          abi: merkleDropAbi,
+          functionName: "merkleRoot",
+        },
+      ],
     }),
   ])
 

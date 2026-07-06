@@ -8,9 +8,9 @@ import {
   resolveAgentAmount,
   resolveAgentValidator,
 } from "../src/agent/index.ts"
-import { isTxPlanForAccount } from "../src/protocol/index.ts"
+import { DEFAULT_RPC_URLS, isTxPlanForAccount, readAccountSnapshot, readHealth } from "../src/protocol/index.ts"
 import { mockAccount, mockSummary, mockValidators } from "../src/protocol/mockData.ts"
-import { sanitizeAgentContent } from "../src/server/agentApi.ts"
+import { handleAgentApiRequest, sanitizeAgentContent } from "../src/server/agentApi.ts"
 
 function ok(input) {
   const result = parseAgentInstruction(input, mockValidators)
@@ -173,5 +173,186 @@ assert.equal(
   sanitizeAgentContent("You can review the staking plan before signing."),
   "You can review the staking plan before signing.",
 )
+
+assert.equal(DEFAULT_RPC_URLS[0], "https://ethereum-rpc.publicnode.com")
+
+const fakeClient = {
+  multicallCalls: [],
+  readContractCalls: [],
+  async getBlockNumber() {
+    return 123n
+  },
+  async multicall(input) {
+    this.multicallCalls.push(input)
+    if (input.contracts.length === 7) {
+      return [1n, 2n, [], [0n, 0n], 3n, 4n, 5n]
+    }
+    if (input.contracts.length === 2) {
+      return [6n, `0x${"11".repeat(32)}`]
+    }
+    throw new Error(`Unexpected multicall size: ${input.contracts.length}`)
+  },
+  async readContract(input) {
+    this.readContractCalls.push(input)
+    throw new Error("readContract should not be used for aggregated startup reads")
+  },
+}
+const fakeSnapshot = await readAccountSnapshot(fakeClient, mockAccount)
+assert.equal(fakeSnapshot.safeBalance, 1n)
+const fakeHealth = await readHealth(fakeClient)
+assert.equal(fakeHealth.blockNumber, 123n)
+assert.equal(fakeClient.multicallCalls.length, 2)
+assert.equal(fakeClient.readContractCalls.length, 0)
+
+const lockedAgentResponse = await handleAgentApiRequest(
+  new Request("http://localhost/api/agent", {
+    method: "POST",
+    body: JSON.stringify({
+      message: "hello",
+      context: { agentAccess: "locked", hasLiveSnapshot: false, validatorLabels: [] },
+    }),
+  }),
+  {
+    SAFECAFE_LLM_API_BASE: "https://example.invalid",
+    SAFECAFE_LLM_API_MODEL: "test",
+    SAFECAFE_LLM_API_KEY: "secret",
+  },
+)
+assert.equal(lockedAgentResponse.status, 200)
+assert.equal((await lockedAgentResponse.json()).source, "fallback")
+
+const forgedEligibleWithoutRpcResponse = await handleAgentApiRequest(
+  new Request("http://localhost/api/agent", {
+    method: "POST",
+    body: JSON.stringify({
+      message: "hello",
+      context: { account: mockAccount, agentAccess: "eligible", hasLiveSnapshot: true, validatorLabels: [] },
+    }),
+  }),
+  {
+    SAFECAFE_LLM_API_BASE: "https://example.invalid",
+    SAFECAFE_LLM_API_MODEL: "test",
+    SAFECAFE_LLM_API_KEY: "secret",
+  },
+)
+assert.equal((await forgedEligibleWithoutRpcResponse.json()).source, "fallback")
+
+const tooLargeResponse = await handleAgentApiRequest(
+  new Request("http://localhost/api/agent", {
+    method: "POST",
+    headers: { "content-length": "24001" },
+    body: "{}",
+  }),
+  {},
+)
+assert.equal(tooLargeResponse.status, 413)
+
+const invalidJsonResponse = await handleAgentApiRequest(
+  new Request("http://localhost/api/agent", { method: "POST", body: "{" }),
+  {},
+)
+assert.equal(invalidJsonResponse.status, 400)
+
+const originalFetch = globalThis.fetch
+let upstreamCalls = 0
+let unsafeStream = false
+globalThis.fetch = async (_url, init) => {
+  const body = JSON.parse(String(init?.body ?? "{}"))
+  if (Array.isArray(body)) {
+    return new Response(
+      JSON.stringify(
+        body.map((item) => ({
+          jsonrpc: "2.0",
+          id: item.id,
+          result: `0x${(10n ** 18n).toString(16)}`,
+        })),
+      ),
+      { status: 200, headers: { "content-type": "application/json" } },
+    )
+  }
+  if (body.method === "eth_call") {
+    return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: `0x${(10n ** 18n).toString(16)}` }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    })
+  }
+  upstreamCalls += 1
+  if (body.stream) {
+    if (unsafeStream) {
+      return new Response(
+        'data: {"choices":[{"delta":{"content":"I\\u0027ll "}}]}\n\n' +
+          'data: {"choices":[{"delta":{"content":"submit the transaction for you."}}]}\n\n' +
+          "data: [DONE]\n\n",
+        { status: 200, headers: { "content-type": "text/event-stream" } },
+      )
+    }
+    return new Response(
+      'data: {"choices":[{"delta":{"content":"Review "}}]}\n\n' +
+        'data: {"choices":[{"delta":{"content":"before signing."}}]}\n\n' +
+        "data: [DONE]\n\n",
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    )
+  }
+  return new Response(
+    JSON.stringify({
+      choices: [{ message: { content: "Review this plan before signing." } }],
+    }),
+    { status: 200, headers: { "content-type": "application/json" } },
+  )
+}
+try {
+  const streamResponse = await handleAgentApiRequest(
+    new Request("http://localhost/api/agent", {
+      method: "POST",
+      headers: { accept: "text/event-stream" },
+      body: JSON.stringify({
+        message: "help",
+        stream: true,
+        context: {
+          account: mockAccount,
+          agentAccess: "eligible",
+          hasLiveSnapshot: true,
+          hasStakingPosition: true,
+          validatorLabels: [],
+        },
+      }),
+    }),
+    {
+      SAFECAFE_AGENT_TEST_VERIFIED_ACCESS: "true",
+      SAFECAFE_LLM_API_BASE: "https://llm.example",
+      SAFECAFE_LLM_API_MODEL: "test",
+      SAFECAFE_LLM_API_KEY: "secret",
+    },
+  )
+  assert.equal(streamResponse.headers.get("content-type")?.includes("text/event-stream"), true)
+  const streamText = await streamResponse.text()
+  assert.equal(streamText.includes('"type":"thinking"'), true)
+  assert.equal(streamText.includes('"type":"final"'), true)
+  assert.equal(upstreamCalls, 1)
+
+  unsafeStream = true
+  const unsafeStreamResponse = await handleAgentApiRequest(
+    new Request("http://localhost/api/agent", {
+      method: "POST",
+      headers: { accept: "text/event-stream" },
+      body: JSON.stringify({
+        message: "help",
+        stream: true,
+        context: { account: mockAccount, hasLiveSnapshot: true, validatorLabels: [] },
+      }),
+    }),
+    {
+      SAFECAFE_AGENT_TEST_VERIFIED_ACCESS: "true",
+      SAFECAFE_LLM_API_BASE: "https://llm.example",
+      SAFECAFE_LLM_API_MODEL: "test",
+      SAFECAFE_LLM_API_KEY: "secret",
+    },
+  )
+  const unsafeStreamText = await unsafeStreamResponse.text()
+  assert.equal(unsafeStreamText.includes("submit the transaction for you"), false)
+  assert.equal(unsafeStreamText.includes('"type":"final"'), true)
+} finally {
+  globalThis.fetch = originalFetch
+}
 
 console.log("Agent core tests passed")

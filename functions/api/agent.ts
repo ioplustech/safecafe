@@ -1,6 +1,7 @@
 import { handleAgentApiRequest } from "../../src/server/agentApi"
 
 export const onRequestPost: PagesFunction<{
+  SAFECAFE_RPC_URL?: string
   SAFECAFE_LLM_API_BASE?: string
   SAFECAFE_LLM_API_MODEL?: string
   SAFECAFE_LLM_API_KEY?: string
