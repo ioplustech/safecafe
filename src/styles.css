@@ -71,8 +71,8 @@ a:focus-visible,
 input:focus-visible,
 select:focus-visible,
 textarea:focus-visible {
-  outline: 3px solid rgba(0, 136, 121, 0.18);
-  outline-offset: 2px;
+  outline: 3px solid rgba(0, 136, 121, 0.42);
+  outline-offset: 3px;
 }
 
 @keyframes fadeSlideUp {
@@ -132,17 +132,6 @@ textarea:focus-visible {
   }
 }
 
-@keyframes toastIn {
-  from {
-    opacity: 0;
-    transform: translateY(12px) scale(0.98);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
-}
-
 .enter {
   animation: fadeSlideUp 420ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
@@ -174,6 +163,7 @@ textarea:focus-visible {
   min-width: 0;
   align-items: center;
   gap: 14px;
+  min-height: 44px;
   border: 0;
   padding: 0;
   color: var(--ink);
@@ -186,16 +176,40 @@ textarea:focus-visible {
   width: 54px;
   height: 54px;
   place-items: center;
-  color: #ffffff;
-  background: linear-gradient(145deg, #0aa892 0%, #008879 100%);
-  clip-path: polygon(50% 3%, 88% 18%, 82% 70%, 50% 97%, 18% 70%, 12% 18%);
-  font-size: 32px;
-  font-weight: 950;
-  line-height: 1;
+  color: var(--teal);
 }
 
 .brand-mark svg {
-  display: none;
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  filter: drop-shadow(0 10px 18px rgba(0, 111, 101, 0.18));
+}
+
+.brand-mark-shield {
+  fill: #008879;
+}
+
+.brand-mark-steam {
+  fill: none;
+  stroke: #ffffff;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2.8;
+}
+
+.brand-mark-cup {
+  fill: #ffffff;
+}
+
+.brand-mark-handle,
+.brand-mark-saucer {
+  fill: none;
+  stroke: #ffffff;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 3;
 }
 
 .brand strong {
@@ -339,6 +353,7 @@ textarea:focus-visible {
 .sidebar-version {
   margin-top: 84px;
   color: #758095;
+  text-align: center;
   font-size: 13px;
 }
 
@@ -766,7 +781,7 @@ textarea:focus-visible {
 }
 
 .amount-input-wrap button {
-  min-height: 38px;
+  min-height: 44px;
   margin-right: 12px;
   border: 1px solid var(--line);
   border-radius: 9px;
@@ -805,7 +820,7 @@ textarea:focus-visible {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  min-height: 38px;
+  min-height: 44px;
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 0 12px;
@@ -815,7 +830,57 @@ textarea:focus-visible {
 }
 
 .language-pill {
+  min-width: 78px;
   font-weight: 800;
+}
+
+.language-menu-wrap {
+  position: relative;
+}
+
+.language-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 50;
+  display: grid;
+  width: 176px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 6px;
+  background: #ffffff;
+  box-shadow: 0 16px 40px rgba(16, 24, 40, 0.14);
+  animation: fadeScale 140ms ease both;
+}
+
+.language-menu button {
+  display: grid;
+  grid-template-columns: 1fr;
+  justify-items: start;
+  gap: 2px;
+  min-height: 42px;
+  border: 0;
+  border-radius: 8px;
+  padding: 7px 10px;
+  color: var(--ink);
+  background: transparent;
+  text-align: left;
+}
+
+.language-menu button:hover,
+.language-menu button.active {
+  background: var(--teal-soft);
+}
+
+.language-menu span {
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.language-menu small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
 }
 
 .overview-panel {
@@ -960,6 +1025,81 @@ textarea:focus-visible {
   font-size: 20px;
 }
 
+.overview-validator-list {
+  display: grid;
+  gap: 9px;
+  margin-top: 18px;
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+}
+
+.overview-validator-list-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.overview-validator-list-title strong {
+  color: var(--ink);
+}
+
+.overview-validator-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px 14px;
+  border: 1px solid #dce7e3;
+  border-radius: 8px;
+  padding: 11px 12px;
+  background: linear-gradient(180deg, #ffffff, #fbfdfc);
+  box-shadow: inset 3px 0 0 rgba(0, 136, 121, 0.2);
+}
+
+.overview-validator-main {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.overview-validator-main strong {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 850;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.overview-validator-main small,
+.overview-validator-position small,
+.overview-validator-empty {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.overview-validator-position {
+  display: grid;
+  justify-items: end;
+  gap: 2px;
+  min-width: 96px;
+}
+
+.overview-validator-position b {
+  color: #006f63;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.overview-validator-empty {
+  margin: 0;
+}
+
 .validators-panel {
   grid-column: 1 / -1;
   padding: 0;
@@ -985,7 +1125,7 @@ textarea:focus-visible {
 
 .validator-search input {
   width: 100%;
-  min-height: 42px;
+  min-height: 44px;
   border: 1px solid var(--line-strong);
   border-radius: 8px;
   padding: 0 13px;
@@ -1003,7 +1143,7 @@ textarea:focus-visible {
 }
 
 .validator-toolbar .custom-select > button {
-  min-height: 42px;
+  min-height: 44px;
   border-radius: 8px;
 }
 
@@ -1012,7 +1152,7 @@ textarea:focus-visible {
 }
 
 .segmented-toggle {
-  min-height: 42px;
+  min-height: 44px;
   border: 1px solid var(--line-strong);
   border-radius: 8px;
   padding: 0 14px;
@@ -1129,9 +1269,12 @@ textarea:focus-visible {
 }
 
 .validator-identity button {
+  display: inline-flex;
+  align-items: center;
   width: fit-content;
+  min-height: 40px;
   border: 0;
-  padding: 0;
+  padding: 0 8px 0 0;
   color: #a5a9b1;
   background: transparent;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
@@ -1149,7 +1292,7 @@ textarea:focus-visible {
 .validator-stat {
   display: grid;
   align-content: center;
-  gap: 6px;
+  gap: 5px;
   min-width: 0;
 }
 
@@ -1166,40 +1309,52 @@ textarea:focus-visible {
   color: #0b0f19;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   overflow: hidden;
-  font-size: 18px;
-  font-weight: 550;
+  font-size: 17px;
+  font-weight: 650;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .validator-stat em {
-  display: none;
+  overflow: hidden;
+  color: #8b929e;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .progress-track {
   display: block;
-  width: min(100%, 120px);
-  height: 8px;
+  width: min(100%, 116px);
+  height: 5px;
   overflow: hidden;
-  border-radius: 3px;
-  background: repeating-linear-gradient(to right, #e3e8ee 0, #e3e8ee 12px, transparent 12px, transparent 18px);
+  border-radius: 999px;
+  background: #e6ecea;
 }
 
 .progress-fill {
   display: block;
   height: 100%;
-  border-radius: 3px;
-  background: repeating-linear-gradient(
-    to right,
-    var(--green) 0,
-    var(--green) 12px,
-    transparent 12px,
-    transparent 18px
-  );
+  border-radius: inherit;
+  background: linear-gradient(90deg, #00a67a, var(--green));
   transition: width 420ms ease;
 }
 
 .progress-fill.blue {
+  background: var(--teal);
+}
+
+.overview-validator-row .progress-track {
+  grid-column: 1 / -1;
+  width: 100%;
+  height: 5px;
+  background: #e8edf0;
+}
+
+.overview-validator-row .progress-fill {
   background: var(--teal);
 }
 
@@ -1210,8 +1365,9 @@ textarea:focus-visible {
 
 .row-actions button,
 .row-arrow {
-  width: 28px;
-  min-height: 28px;
+  width: 44px;
+  flex: 0 0 44px;
+  min-height: 44px;
   border: 0;
   padding: 0;
   color: #475269;
@@ -1248,7 +1404,7 @@ textarea:focus-visible {
 
 .secondary-action-button {
   width: 100%;
-  min-height: 34px;
+  min-height: 44px;
   border: 1px solid var(--line-strong);
   border-radius: 0;
   color: #777b84;
@@ -1258,7 +1414,7 @@ textarea:focus-visible {
 }
 
 .validator-row-actions .primary-button {
-  min-height: 34px;
+  min-height: 44px;
   border-radius: 0;
   padding: 0 12px;
   font-size: 12px;
@@ -1312,6 +1468,52 @@ textarea:focus-visible {
 .key-row > * {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+.address-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(0, auto) auto;
+  gap: 10px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px;
+  background: #ffffff;
+}
+
+.address-row > span {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.address-row > strong {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  font-family: var(--mono);
+  font-size: 0.92rem;
+  overflow-wrap: anywhere;
+}
+
+.address-row > strong em {
+  border: 1px solid color-mix(in srgb, var(--teal) 22%, transparent);
+  border-radius: 999px;
+  padding: 2px 7px;
+  color: var(--teal-strong);
+  font-family: inherit;
+  font-size: 0.68rem;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.address-row-actions {
+  display: inline-flex;
+  gap: 6px;
 }
 
 .info-card span {
@@ -1383,6 +1585,10 @@ textarea:focus-visible {
   gap: 10px;
 }
 
+.modal-actions .soft-button {
+  min-height: 40px;
+}
+
 .modal-field {
   display: grid;
   gap: 8px;
@@ -1421,6 +1627,11 @@ textarea:focus-visible {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #ffffff;
+}
+
+.address-row-actions .icon-button {
+  width: 44px;
+  height: 44px;
 }
 
 .tooltip-wrap {
@@ -1473,91 +1684,36 @@ textarea:focus-visible {
   transform: translate(-50%, 0);
 }
 
-.toast-stack {
-  position: fixed;
-  right: 24px;
-  top: 24px;
-  z-index: 80;
-  display: grid;
-  gap: 10px;
-  width: min(420px, calc(100vw - 32px));
+[data-sonner-toaster] {
+  z-index: 170;
 }
 
-.toast {
-  display: grid;
-  grid-template-columns: auto 1fr auto;
-  align-items: start;
-  gap: 11px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 13px 12px 13px 14px;
-  background: #ffffff;
-  box-shadow: var(--shadow-soft);
-  animation: toastIn 220ms ease both;
+[data-sonner-toast] {
+  border-radius: 9px;
+  padding-right: 40px;
+  box-shadow: 0 8px 20px rgba(16, 24, 40, 0.12);
+  font-family: inherit;
 }
 
-.toast.success {
-  border-color: rgba(32, 184, 121, 0.28);
+[data-sonner-toast][data-styled="true"] [data-close-button] {
+  /* biome-ignore lint/complexity/noImportantStyles: Sonner injects its default close-button position after app CSS. */
+  right: 10px !important;
+  /* biome-ignore lint/complexity/noImportantStyles: Sonner injects its default close-button position after app CSS. */
+  left: auto !important;
+  /* biome-ignore lint/complexity/noImportantStyles: Sonner injects its default close-button position after app CSS. */
+  top: 50% !important;
+  /* biome-ignore lint/complexity/noImportantStyles: Sonner injects its default close-button position after app CSS. */
+  transform: translateY(-50%) !important;
 }
 
-.toast.warning {
-  border-color: rgba(201, 130, 31, 0.34);
-}
-
-.toast > svg {
-  margin-top: 2px;
-  color: var(--teal);
-}
-
-.toast.warning > svg {
-  color: #c9821f;
-}
-
-.toast span {
-  display: grid;
-  min-width: 0;
-  gap: 3px;
-}
-
-.toast strong {
-  color: var(--ink);
-  font-size: 13px;
+[data-sonner-toast] [data-title] {
+  font-size: 12px;
   font-weight: 850;
 }
 
-.toast small {
-  display: -webkit-box;
-  overflow: hidden;
-  color: var(--muted);
-  font-size: 13px;
-  line-height: 1.4;
-  overflow-wrap: anywhere;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 4;
-}
-
-.toast:hover small,
-.toast:focus-within small {
-  display: block;
-  max-height: 180px;
-  overflow: auto;
-}
-
-.toast button {
-  display: grid;
-  width: 28px;
-  height: 28px;
-  place-items: center;
-  border: 0;
-  border-radius: 8px;
-  padding: 0;
-  color: var(--soft);
-  background: transparent;
-}
-
-.toast button:hover {
-  color: var(--ink);
-  background: #f2f5f8;
+[data-sonner-toast] [data-description] {
+  font-size: 12px;
+  line-height: 1.35;
 }
 
 .spinner {
@@ -1613,6 +1769,21 @@ textarea:focus-visible {
 .agent-launcher.open {
   opacity: 0;
   pointer-events: none;
+}
+
+.agent-launcher.fixed {
+  right: max(24px, env(safe-area-inset-right));
+  bottom: max(24px, env(safe-area-inset-bottom));
+  left: auto;
+  top: auto;
+  opacity: 0.55;
+  cursor: pointer;
+  transition: opacity 0.2s ease;
+}
+
+.agent-launcher.fixed:hover,
+.agent-launcher.fixed:focus-visible {
+  opacity: 1;
 }
 
 .agent-launcher-dot {
@@ -1990,7 +2161,9 @@ textarea:focus-visible {
   align-items: center;
   gap: 6px;
   width: fit-content;
+  min-height: 40px;
   border: 0;
+  padding: 0 4px;
   background: transparent;
   color: var(--teal-dark);
   font-size: 12px;
@@ -2206,7 +2379,7 @@ textarea:focus-visible {
 
 .agent-plan-actions .primary-button,
 .agent-plan-actions .soft-button {
-  min-height: 38px;
+  min-height: 40px;
   font-size: 13px;
 }
 
@@ -2318,6 +2491,18 @@ textarea:focus-visible {
   background: #ffffff;
   color: var(--ink);
   font: inherit;
+}
+
+.agent-composer textarea:disabled {
+  cursor: not-allowed;
+  border-color: rgba(148, 163, 184, 0.24);
+  background: #f5f7f8;
+  color: var(--muted);
+}
+
+.agent-connect-button.wide {
+  width: 100%;
+  justify-content: center;
 }
 
 @media (max-width: 1180px) {
@@ -2432,6 +2617,16 @@ textarea:focus-visible {
     width: 100%;
   }
 
+  .language-menu-wrap,
+  .language-menu {
+    width: 100%;
+  }
+
+  .language-menu {
+    right: auto;
+    left: 0;
+  }
+
   .sidebar-project,
   .sidebar-version {
     display: none;
@@ -2527,7 +2722,8 @@ textarea:focus-visible {
   }
 
   .validator-row-actions .row-arrow {
-    flex: 0 0 34px;
+    flex: 0 0 44px;
+    min-height: 44px;
   }
 
   .validator-identity strong {
@@ -2542,20 +2738,24 @@ textarea:focus-visible {
     grid-template-columns: 1fr;
   }
 
-  .toast-stack {
-    right: 16px;
-    top: 88px;
-    bottom: auto;
-  }
-
   .donut {
     width: 220px;
     height: 220px;
   }
 
-  .agent-launcher {
+  .agent-launcher.fixed {
+    top: auto;
     right: max(16px, env(safe-area-inset-right));
-    bottom: max(16px, env(safe-area-inset-bottom));
+    bottom: calc(max(18px, env(safe-area-inset-bottom)) + 72px);
+    left: auto;
+    width: 50px;
+    height: 50px;
+    opacity: 0.9;
+  }
+
+  .agent-launcher.fixed:hover,
+  .agent-launcher.fixed:focus-visible {
+    opacity: 1;
   }
 
   .agent-dialog {

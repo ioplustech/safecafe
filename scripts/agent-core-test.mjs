@@ -17,6 +17,7 @@ import {
   readHealth,
 } from "../src/protocol/index.ts"
 import { mockAccount, mockSummary, mockValidators } from "../src/protocol/mockData.ts"
+import { handleAccountLiveRequest } from "../src/server/accountLive.ts"
 import { handleAgentApiRequest, sanitizeAgentContent } from "../src/server/agentApi.ts"
 import {
   handleEthereumRpcGatewayRequest,
@@ -190,6 +191,7 @@ assert.equal(DEFAULT_RPC_URLS[0], "https://ethereum-rpc.publicnode.com")
 assert.equal(createSafenetPublicClient({ authToken: "test-token" }).transport.type, "http")
 assert.equal(createSafenetPublicClient({ authToken: "test-token" }).transport.url, "/api/rpc/ethereum")
 assert.equal(createSafenetPublicClient().transport.type, "fallback")
+assert.equal(createSafenetPublicClient({ rpcUrl: "/api/rpc/ethereum" }).transport.type, "fallback")
 
 const fakeClient = {
   multicallCalls: [],
@@ -256,11 +258,21 @@ const originalFetch = globalThis.fetch
 let upstreamCalls = 0
 let unsafeStream = false
 let rpcGatewayCalls = 0
+let rpcErrorCalls = 0
 const safeOwnerCallSelector = "0x2f54bf6e"
 globalThis.fetch = async (_url, init) => {
   const body = JSON.parse(String(init?.body ?? "{}"))
+  if (body.id === 9 && body.method === "eth_getBalance") {
+    return new Response("bad gateway", { status: 502 })
+  }
   if (body.method === "eth_blockNumber") {
     rpcGatewayCalls += 1
+    if (rpcGatewayCalls === 1) {
+      return new Response(
+        JSON.stringify({ jsonrpc: "2.0", id: body.id, error: { code: -32046, message: "Cannot fulfill request" } }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      )
+    }
     return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: "0x7b" }), {
       status: 200,
       headers: { "content-type": "application/json" },
@@ -279,6 +291,13 @@ globalThis.fetch = async (_url, init) => {
     )
   }
   if (body.method === "eth_call") {
+    if (body.params?.[0]?.data === "0xdeadbeef") {
+      rpcErrorCalls += 1
+      return new Response(
+        JSON.stringify({ jsonrpc: "2.0", id: body.id, error: { code: 3, message: "execution reverted" } }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      )
+    }
     if (typeof body.params?.[0]?.data === "string" && body.params[0].data.startsWith(safeOwnerCallSelector)) {
       return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: `0x${"0".repeat(63)}1` }), {
         status: 200,
@@ -361,11 +380,16 @@ try {
   const unauthenticatedRpc = await handleEthereumRpcGatewayRequest(
     new Request("http://localhost/api/rpc/ethereum", {
       method: "POST",
+      headers: { "x-request-id": "test-rpc-unauthenticated" },
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_blockNumber", params: [] }),
     }),
     { SAFECAFE_AUTH_SECRET: "test-secret" },
   )
   assert.equal(unauthenticatedRpc.status, 401)
+  assert.equal(unauthenticatedRpc.headers.get("x-request-id"), "test-rpc-unauthenticated")
+  const unauthenticatedRpcJson = await unauthenticatedRpc.json()
+  assert.equal(unauthenticatedRpcJson.error.data.requestId, "test-rpc-unauthenticated")
+  assert.equal(unauthenticatedRpcJson.error.data.reason, "authentication_required")
 
   const blockedMethod = await handleEthereumRpcGatewayRequest(
     new Request("http://localhost/api/rpc/ethereum", {
@@ -491,17 +515,73 @@ try {
   )
   assert.equal(authenticatedRpc.status, 200)
   assert.equal((await authenticatedRpc.json()).result, "0x7b")
-  assert.equal(rpcGatewayCalls, 1)
+  assert.equal(rpcGatewayCalls, 2)
+
+  const revertedRpc = await handleEthereumRpcGatewayRequest(
+    new Request("http://localhost/api/rpc/ethereum", {
+      method: "POST",
+      headers: { authorization: `Bearer ${session.token}` },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "eth_call",
+        params: [{ to: "0x5aFE3855358E112B5647B952709E6165e1c1eEEe", data: "0xdeadbeef" }, "latest"],
+      }),
+    }),
+    {
+      SAFECAFE_AUTH_SECRET: "test-secret",
+      SAFECAFE_RPC_ALLOW_ALL_WALLETS: "true",
+      SAFECAFE_RPC_URLS: "https://rpc-one.example,https://rpc-two.example",
+    },
+  )
+  const revertedRpcJson = await revertedRpc.json()
+  assert.equal(revertedRpcJson.error.message, "execution reverted")
+  assert.equal(rpcErrorCalls, 1)
+
+  const accountLiveResponse = await handleAccountLiveRequest(
+    new Request(`http://localhost/api/account/live?account=${testAccount.address}`),
+    { SAFECAFE_MOCK_ACCOUNT_LIVE: "true" },
+  )
+  assert.equal(accountLiveResponse.status, 200)
+  assert.equal(accountLiveResponse.headers.get("cache-control"), "no-store")
 
   const authenticatedBlockedMethod = await handleEthereumRpcGatewayRequest(
     new Request("http://localhost/api/rpc/ethereum", {
       method: "POST",
-      headers: { authorization: `Bearer ${session.token}` },
+      headers: { authorization: `Bearer ${session.token}`, "x-request-id": "test-rpc-blocked-method" },
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_sendRawTransaction", params: [] }),
     }),
     { SAFECAFE_AUTH_SECRET: "test-secret", SAFECAFE_RPC_ALLOW_ALL_WALLETS: "true" },
   )
-  assert.equal((await authenticatedBlockedMethod.json()).error.code, -32601)
+  assert.equal(authenticatedBlockedMethod.headers.get("x-request-id"), "test-rpc-blocked-method")
+  const authenticatedBlockedMethodJson = await authenticatedBlockedMethod.json()
+  assert.equal(authenticatedBlockedMethodJson.error.code, -32601)
+  assert.equal(authenticatedBlockedMethodJson.error.data.reason, "method_not_allowed")
+
+  const upstreamFailure = await handleEthereumRpcGatewayRequest(
+    new Request("http://localhost/api/rpc/ethereum", {
+      method: "POST",
+      headers: { authorization: `Bearer ${session.token}`, "x-request-id": "test-rpc-upstream-failure" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 9,
+        method: "eth_getBalance",
+        params: [testAccount.address, "latest"],
+      }),
+    }),
+    {
+      SAFECAFE_AUTH_SECRET: "test-secret",
+      SAFECAFE_RPC_ALLOW_ALL_WALLETS: "true",
+      SAFECAFE_RPC_URLS: "https://rpc-fail-one.example,https://rpc-fail-two.example",
+    },
+  )
+  assert.equal(upstreamFailure.status, 200)
+  assert.equal(upstreamFailure.headers.get("x-request-id"), "test-rpc-upstream-failure")
+  const upstreamFailureJson = await upstreamFailure.json()
+  assert.equal(upstreamFailureJson.error.code, -32002)
+  assert.equal(upstreamFailureJson.error.data.requestId, "test-rpc-upstream-failure")
+  assert.equal(upstreamFailureJson.error.data.reason, "upstream_unavailable")
+  assert.equal(upstreamFailureJson.error.data.attempts >= 2, true)
 
   const authenticatedBlockedTarget = await handleEthereumRpcGatewayRequest(
     new Request("http://localhost/api/rpc/ethereum", {

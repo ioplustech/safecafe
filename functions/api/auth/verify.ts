@@ -1,14 +1,7 @@
-import { handleRpcVerifyRequest } from "../../../src/server/rpcGateway"
+import { handleRpcVerifyRequest, type RpcGatewayEnv } from "../../../src/server/rpcGateway"
 
-export const onRequestPost: PagesFunction<{
-  SAFECAFE_RPC_ALLOW_ALL_WALLETS?: string
-  SAFECAFE_AUTH_SECRET?: string
-  SAFECAFE_RPC_URL?: string
-  SAFECAFE_RPC_URLS?: string
-}> = async ({ request, env }) => handleRpcVerifyRequest(request, env)
+export const onRequestPost: PagesFunction<RpcGatewayEnv> = async ({ request, env }) =>
+  handleRpcVerifyRequest(request, env)
 
-export const onRequestGet: PagesFunction = async () =>
-  new Response(JSON.stringify({ error: "Method not allowed" }), {
-    status: 405,
-    headers: { "cache-control": "no-store", "content-type": "application/json; charset=utf-8" },
-  })
+export const onRequestGet: PagesFunction<RpcGatewayEnv> = async ({ request, env }) =>
+  handleRpcVerifyRequest(request, env)

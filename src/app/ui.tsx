@@ -52,13 +52,20 @@ export function Metric({
 
 export function ActionButton(props: {
   active?: boolean
+  disabled?: boolean
   icon: ReactNode
   title: string
   subtitle: string
   onClick: () => void
 }) {
   return (
-    <button type="button" className={`action-button ${props.active ? "active" : ""}`} onClick={props.onClick}>
+    <button
+      type="button"
+      className={`action-button ${props.active ? "active" : ""}`}
+      disabled={props.disabled}
+      aria-pressed={Boolean(props.active)}
+      onClick={props.onClick}
+    >
       <span>{props.icon}</span>
       <strong>{props.title}</strong>
       <small>{props.subtitle}</small>

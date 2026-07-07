@@ -126,14 +126,23 @@ export function DetailModal(props: {
     title = t.wallet
     content = account ? (
       <>
-        <KeyValue label={t.signerWallet} value={compactAddress(account, 10, 8)} />
-        <KeyValue
+        <AddressRow
+          label={t.signerWallet}
+          address={account}
+          copyLabel={t.copy}
+          openLabel={t.openExplorer}
+          copyText={props.copyText}
+          openExplorer={props.openExplorer}
+        />
+        <AddressRow
           label={t.stakingSubject}
-          value={
-            subjectAccount
-              ? `${compactAddress(subjectAccount, 10, 8)} (${subjectKind === "safe" ? "Safe" : "EOA"})`
-              : t.notChecked
-          }
+          address={subjectAccount}
+          suffix={subjectKind === "safe" ? "Safe" : "EOA"}
+          fallback={t.notChecked}
+          copyLabel={t.copy}
+          openLabel={t.openExplorer}
+          copyText={props.copyText}
+          openExplorer={props.openExplorer}
         />
         <label className="modal-field">
           <span>{t.managedSafeAddress}</span>
@@ -146,14 +155,6 @@ export function DetailModal(props: {
         </label>
         <p className="modal-help">{t.managedSafeHint}</p>
         <div className="modal-actions">
-          <button type="button" className="soft-button" onClick={() => props.copyText(account)}>
-            <Copy size={15} />
-            {t.copy}
-          </button>
-          <button type="button" className="soft-button" onClick={() => props.openExplorer(subjectAccount ?? account)}>
-            <ArrowUpRight size={15} />
-            {t.openExplorer}
-          </button>
           <button type="button" className="soft-button" onClick={() => props.onRefreshSubject(subjectInput)}>
             {t.useManagedSafe}
           </button>
@@ -202,6 +203,54 @@ export function DetailModal(props: {
         </div>
         <div className="modal-body">{content}</div>
       </div>
+    </div>
+  )
+}
+
+function AddressRow(props: {
+  address: Address | null
+  copyLabel: string
+  copyText: (value: string) => Promise<void>
+  fallback?: string
+  label: string
+  openExplorer: (address: Address) => void
+  openLabel: string
+  suffix?: string
+}) {
+  const address = props.address
+  return (
+    <div className="address-row">
+      <span>{props.label}</span>
+      {address ? (
+        <>
+          <strong>
+            {compactAddress(address, 10, 8)}
+            {props.suffix ? <em>{props.suffix}</em> : null}
+          </strong>
+          <div className="address-row-actions">
+            <button
+              type="button"
+              className="icon-button"
+              onClick={() => props.copyText(address)}
+              aria-label={`${props.copyLabel} ${props.label}`}
+              title={props.copyLabel}
+            >
+              <Copy size={15} />
+            </button>
+            <button
+              type="button"
+              className="icon-button"
+              onClick={() => props.openExplorer(address)}
+              aria-label={`${props.openLabel} ${props.label}`}
+              title={props.openLabel}
+            >
+              <ArrowUpRight size={15} />
+            </button>
+          </div>
+        </>
+      ) : (
+        <strong>{props.fallback ?? ""}</strong>
+      )}
     </div>
   )
 }

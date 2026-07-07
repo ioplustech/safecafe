@@ -119,7 +119,7 @@ export async function verifyWalletSignature(input: {
   try {
     const client = createPublicClient({
       chain: ethereumMainnet,
-      transport: fallback(rpcUrls(input.env).map((url) => http(url, { timeout: 8_000 }))),
+      transport: fallback((await rpcUrls(input.env)).map((url) => http(url, { timeout: 8_000 }))),
     })
     const magicValue = await client.readContract({
       address: input.address,
@@ -177,7 +177,8 @@ function authSecret(env: RpcGatewayEnv) {
 }
 
 function isLocalDevRuntime() {
-  const host = globalThis.location?.hostname
+  const maybeGlobal = globalThis as { location?: { hostname?: unknown } }
+  const host = typeof maybeGlobal.location?.hostname === "string" ? maybeGlobal.location.hostname : undefined
   if (host === "localhost" || host === "127.0.0.1") return true
   return typeof process !== "undefined" && process.env.NODE_ENV === "test"
 }

@@ -208,7 +208,7 @@ function buildClaimRewardsPhase(context: AgentContext): { phase: AgentPlanPhase;
   const subjectAccount = stakingSubject(context)
   if (!context.account) risks.push(blocked("wallet-required", "Connect wallet before claiming rewards."))
   if (!subjectAccount) risks.push(blocked("subject-required", "Choose a staking account before claiming rewards."))
-  if (!context.rewardProof?.proof?.length)
+  if (!Array.isArray(context.rewardProof?.proof))
     risks.push(blocked("reward-proof-required", "No claimable reward proof is available."))
   if (
     context.liveMerkleRoot &&

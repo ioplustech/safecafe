@@ -1,7 +1,7 @@
 import fs from "node:fs"
-import util from "node:util"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+import util from "node:util"
 import { ethers } from "ethers"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -20,11 +20,11 @@ const colors = {
 }
 
 const logger = {
-  green: (...args) => console.log(colors.green + colors.bold + "✔", formatArgs(args), colors.reset),
-  warn: (...args) => console.log(colors.yellow + colors.bold + "⚠", formatArgs(args), colors.reset),
-  error: (...args) => console.log(colors.red + colors.bold + colors.bgRedLight + "✖", formatArgs(args), colors.reset),
+  green: (...args) => console.log(`${colors.green + colors.bold}✔`, formatArgs(args), colors.reset),
+  warn: (...args) => console.log(`${colors.yellow + colors.bold}⚠`, formatArgs(args), colors.reset),
+  error: (...args) => console.log(`${colors.red + colors.bold + colors.bgRedLight}✖`, formatArgs(args), colors.reset),
   success: (...args) =>
-    console.log(colors.green + colors.bold + colors.bgGreenLight + "✔", formatArgs(args), colors.reset),
+    console.log(`${colors.green + colors.bold + colors.bgGreenLight}✔`, formatArgs(args), colors.reset),
 }
 
 function formatArgs(args) {

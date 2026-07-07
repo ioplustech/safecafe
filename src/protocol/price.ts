@@ -11,7 +11,7 @@ export type SafePriceResult = {
   fetchedAt: number
 }
 
-export async function fetchSafeUsdPrice(): Promise<SafePriceResult> {
+export async function fetchSafeUsdPriceFromCoinGecko(): Promise<SafePriceResult> {
   const contract = CONTRACTS.safeToken.toLowerCase()
   const url = new URL("https://api.coingecko.com/api/v3/simple/token_price/ethereum")
   url.searchParams.set("contract_addresses", contract)

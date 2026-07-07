@@ -8,6 +8,7 @@ import type { MessageBundle } from "./i18n"
 const storageKey = "safecafe:agent-launcher-position"
 const launcherSize = 56
 const edge = 24
+const draggable = readDraggableEnabled(import.meta.env.VITE_AGENT_LAUNCHER_DRAGGABLE)
 
 export type AgentLauncherProps = {
   t: MessageBundle
@@ -15,8 +16,10 @@ export type AgentLauncherProps = {
   isSubmitting: boolean
   rpcAuthToken: string | null
   onApplyPlan: (plan: TxPlan) => void
+  onAuthenticateAgent: () => Promise<string | null>
   onConnectWallet: () => Promise<void>
   onExportPlan: (plan: TxPlan) => void
+  onOpen?: () => void
   onSimulatePlan: (plan: TxPlan) => Promise<TxPlan>
   onSubmitPlan: (plan: TxPlan) => Promise<void>
 }
@@ -79,6 +82,7 @@ export function AgentLauncher(props: AgentLauncherProps) {
   }
 
   function onPointerMove(event: React.PointerEvent<HTMLButtonElement>) {
+    if (!draggable) return
     const drag = dragRef.current
     if (!drag || drag.pointerId !== event.pointerId) return
     const distance = Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY)
@@ -92,7 +96,10 @@ export function AgentLauncher(props: AgentLauncherProps) {
     dragRef.current = null
     if (!drag || drag.pointerId !== event.pointerId) return
     event.currentTarget.releasePointerCapture(event.pointerId)
-    if (!drag.moved) setIsOpen((value) => !value)
+    if (!drag.moved) {
+      if (!isOpen) props.onOpen?.()
+      setIsOpen((value) => !value)
+    }
   }
 
   return (
@@ -100,17 +107,18 @@ export function AgentLauncher(props: AgentLauncherProps) {
       <button
         ref={buttonRef}
         type="button"
-        className={`agent-launcher ${isOpen ? "open" : ""}`}
-        style={{ left: position.x, top: position.y, right: "auto", bottom: "auto" }}
+        className={`agent-launcher${draggable ? "" : " fixed"}${isOpen ? " open" : ""}`}
+        style={draggable ? { left: position.x, top: position.y, right: "auto", bottom: "auto" } : undefined}
         aria-label={props.t.agentLauncherLabel}
         aria-expanded={isOpen}
-        title={isMobile ? props.t.agentLauncherLabel : props.t.agentDragHint}
+        title={isMobile || !draggable ? props.t.agentLauncherLabel : props.t.agentDragHint}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onKeyDown={(event) => {
           if (event.key === "Enter" || event.key === " ") {
             event.preventDefault()
+            props.onOpen?.()
             setIsOpen(true)
           }
         }}
@@ -125,6 +133,7 @@ export function AgentLauncher(props: AgentLauncherProps) {
         context={props.context}
         isSubmitting={props.isSubmitting}
         rpcAuthToken={props.rpcAuthToken}
+        onAuthenticateAgent={props.onAuthenticateAgent}
         onClose={() => setIsOpen(false)}
         onConnectWallet={props.onConnectWallet}
         onApplyPlan={props.onApplyPlan}
@@ -173,4 +182,9 @@ function getLauncherLeftEdge() {
   const raw = getComputedStyle(document.documentElement).getPropertyValue("--sidebar-width").trim()
   const sidebarWidth = Number.parseFloat(raw)
   return Number.isFinite(sidebarWidth) && window.innerWidth > 820 ? sidebarWidth + edge : edge
+}
+
+function readDraggableEnabled(value: unknown) {
+  if (typeof value !== "string") return false
+  return value.trim().toLowerCase() === "true"
 }

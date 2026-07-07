@@ -1,5 +1,10 @@
 import { type Address, formatUnits } from "viem"
 
+export function formatSafeInput(value: bigint): string {
+  const raw = formatUnits(value, 18)
+  return raw.includes(".") ? raw.replace(/\.?0+$/, "") : raw
+}
+
 export function formatSafe(value: bigint, digits = 2): string {
   const raw = Number(formatUnits(value, 18))
   return new Intl.NumberFormat("en-US", {

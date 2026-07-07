@@ -1,9 +1,7 @@
 import {
   ArrowDownToLine,
-  ArrowUpRight,
   CheckCircle2,
   Clock3,
-  Copy,
   Database,
   Gift,
   Info,
@@ -13,18 +11,11 @@ import {
 } from "lucide-react"
 import type { CSSProperties, ReactNode } from "react"
 import type { Address } from "viem"
-import { compactAddress, formatSafe, formatUsdFromSafe, type TxPlan, type ValidatorInfo } from "../protocol"
-import {
-  formatDelayLabel,
-  merkleLabel,
-  safeParsedAmount,
-  translateTxLabel,
-  translateTxTitle,
-  translateTxWarning,
-} from "./formatters"
+import { compactAddress, formatSafe, formatSafeInput, formatUsdFromSafe, type ValidatorInfo } from "../protocol"
+import { formatDelayLabel, merkleLabel } from "./formatters"
 import type { MessageBundle } from "./i18n"
 import type { AccountSummary, Action, DataStatus, Modal, NavItem } from "./types"
-import { ActionButton, CustomSelect, FullPanel, InfoCard, KeyValue, Progress, StatusBadge, Tooltip } from "./ui"
+import { ActionButton, CustomSelect, FullPanel, InfoCard, Progress, StatusBadge, Tooltip } from "./ui"
 
 type ValidatorSort = "stake" | "participation" | "commission" | "name" | "yourStake"
 const validatorSkeletonKeys = [
@@ -39,10 +30,8 @@ export function DashboardView(props: {
   action: Action
   amount: string
   accountReady: boolean
-  buildPlan: () => void
   connectedAccount: Address | null
-  copyText: (value: string) => Promise<void>
-  exportSafePayload: () => void
+  executeAction: (action?: Action) => Promise<void>
   isLoadingValidators: boolean
   isSubmitting: boolean
   modal: Modal
@@ -56,10 +45,8 @@ export function DashboardView(props: {
   setShowOnlyActive: (value: boolean) => void
   setValidator: (address: Address) => void
   showOnlyActive: boolean
-  submitPlan: () => void
   summary: AccountSummary
   safePriceUsd: number | null
-  txPlan: TxPlan | null
   txProgress: string
   validator: Address
   visibleValidators: ValidatorInfo[]
@@ -71,6 +58,13 @@ export function DashboardView(props: {
   const { t } = props
   const hasValidators = props.validators.length > 0
   const accountActionLabel = props.connectedAccount ? t.refreshLive : t.connectWallet
+  const validatorOptions = props.validators.map((item) => ({
+    value: item.address,
+    label: item.label,
+    detail: `${compactAddress(item.address, 8, 6)} · ${t.yourStake} ${
+      props.accountReady ? `${formatSafe(item.userStake)} SAFE` : "--"
+    }`,
+  }))
   return (
     <div className="content-grid enter">
       <div className="main-stack">
@@ -95,6 +89,7 @@ export function DashboardView(props: {
               icon={<Gift />}
               title={t.claimRewards}
               subtitle={t.claimRewardsSub}
+              disabled={props.isSubmitting}
               onClick={() => props.selectAction("claim-rewards")}
             />
           </div>
@@ -116,7 +111,7 @@ export function DashboardView(props: {
                     disabled={!props.accountReady}
                     onClick={() =>
                       props.setAmount(
-                        formatSafe(
+                        formatSafeInput(
                           props.action === "stake" ? props.summary.safeBalance : props.selectedValidator.userStake,
                         ),
                       )
@@ -133,20 +128,29 @@ export function DashboardView(props: {
                   label={t.validator}
                   value={props.validator}
                   onChange={(value) => props.setValidator(value as Address)}
-                  options={props.validators.map((item) => ({
-                    value: item.address,
-                    label: item.label,
-                    detail: compactAddress(item.address, 8, 6),
-                  }))}
+                  options={validatorOptions}
                 />
               </div>
               <button
                 type="button"
                 className="primary-button"
-                onClick={() => void (props.accountReady ? props.buildPlan() : props.onConnect())}
+                disabled={props.isSubmitting}
+                onClick={() => void (props.accountReady ? props.executeAction() : props.onConnect())}
               >
-                {!props.accountReady ? accountActionLabel : props.action === "stake" ? t.stakeAction : t.unstakeAction}
+                {props.isSubmitting
+                  ? t.preparingAction
+                  : !props.accountReady
+                    ? accountActionLabel
+                    : props.action === "stake"
+                      ? t.stakeAction
+                      : t.unstakeAction}
               </button>
+              {props.txProgress && (
+                <p className="action-progress-note">
+                  <span className="spinner" />
+                  {props.txProgress}
+                </p>
+              )}
             </div>
           )}
           {props.action === "claim-rewards" && (
@@ -154,10 +158,17 @@ export function DashboardView(props: {
               <button
                 type="button"
                 className="primary-button"
-                onClick={() => void (props.accountReady ? props.selectAction("claim-rewards") : props.onConnect())}
+                disabled={props.isSubmitting}
+                onClick={() => void (props.accountReady ? props.executeAction("claim-rewards") : props.onConnect())}
               >
-                {!props.accountReady ? accountActionLabel : t.claimRewards}
+                {props.isSubmitting ? t.preparingAction : !props.accountReady ? accountActionLabel : t.claimRewards}
               </button>
+              {props.txProgress && (
+                <p className="action-progress-note">
+                  <span className="spinner" />
+                  {props.txProgress}
+                </p>
+              )}
             </div>
           )}
         </section>
@@ -169,36 +180,9 @@ export function DashboardView(props: {
           accountReady={props.accountReady}
           summary={props.summary}
           safePriceUsd={props.safePriceUsd}
+          validators={props.validators}
         />
       </aside>
-
-      <section className="panel distribution-panel validators-panel">
-        <div className="panel-title">
-          <h2>{t.stakingDistribution}</h2>
-          <button type="button" className="soft-button" onClick={() => props.setActiveNav("validators")}>
-            {t.viewAllValidators} <ArrowUpRight size={15} />
-          </button>
-        </div>
-        <ValidatorTable
-          t={t}
-          validators={props.visibleValidators.slice(0, 3)}
-          totalStaked={props.validatorPoolTotal}
-          accountReady={props.dataStatus.isLive}
-          emptyMessage={t.validatorInfoFailed}
-          isLoading={props.isLoadingValidators}
-          setModal={props.setModal}
-          openExplorer={props.openExplorer}
-          safePriceUsd={props.safePriceUsd}
-          onStake={(nextValidator) => {
-            props.setValidator(nextValidator)
-            props.selectAction("stake")
-          }}
-          onUnstake={(nextValidator) => {
-            props.setValidator(nextValidator)
-            props.selectAction("unstake")
-          }}
-        />
-      </section>
     </div>
   )
 }
@@ -245,7 +229,7 @@ export function ValidatorTable(props: {
           <article className="validator-row" key={item.address}>
             <div className="validator-identity">
               <strong>{item.label}</strong>
-              <button type="button" onClick={() => props.openExplorer(item.address)}>
+              <button className="validator-address-link" type="button" onClick={() => props.openExplorer(item.address)}>
                 {compactAddress(item.address, 6, 4)}
               </button>
             </div>
@@ -254,6 +238,7 @@ export function ValidatorTable(props: {
               label={t.participation14d}
               tooltip={t.participationTooltip}
               value={`${item.participationRate.toFixed(2)}%`}
+              detail={`${formatSafe(item.totalStake)} SAFE`}
               progress={<Progress value={item.participationRate} variant="green" />}
             />
             <ValidatorStat
@@ -402,16 +387,21 @@ function StakingOverview({
   accountReady,
   summary,
   safePriceUsd,
+  validators,
 }: {
   t: MessageBundle
   accountReady: boolean
   summary: AccountSummary
   safePriceUsd: number | null
+  validators: ValidatorInfo[]
 }) {
   const totalBalance = summary.safeBalance + summary.totalStaked
   const stakedShare = totalBalance > 0n ? Number((summary.totalStaked * 10000n) / totalBalance) / 100 : 0
   const safeBalanceShare = Math.max(0, 100 - stakedShare)
   const formattedTotal = accountReady ? formatSafe(totalBalance) : "--"
+  const stakedValidators = validators
+    .filter((item) => item.userStake > 0n)
+    .sort((a, b) => compareBigintDesc(a.userStake, b.userStake))
 
   return (
     <section className="panel overview-panel">
@@ -450,165 +440,48 @@ function StakingOverview({
         <span>{t.participation}</span>
         <strong>95%+</strong>
       </div>
-    </section>
-  )
-}
-
-function TxPlanPanel(props: {
-  action: Action
-  amount: string
-  t: MessageBundle
-  account: Address | null
-  copyText: (value: string) => Promise<void>
-  exportSafePayload: () => void
-  isSubmitting: boolean
-  selectedValidator: ValidatorInfo
-  submitPlan: () => void
-  txPlan: TxPlan | null
-  txProgress: string
-  summary: AccountSummary
-}) {
-  const { t, txPlan } = props
-  const canSubmit = txPlan?.simulation?.status === "passed" || txPlan?.simulation?.status === "partial"
-  return (
-    <section className="panel tx-plan-panel">
-      <div className="panel-title">
-        <h2>{t.reviewBeforeSigning}</h2>
-      </div>
-      {txPlan ? (
-        <div className="tx-plan">
-          <strong>{translateTxTitle(txPlan, t)}</strong>
-          <small>
-            {props.selectedValidator.label} / {props.account ? compactAddress(props.account) : props.t.noAccount}
-          </small>
-          <TxOutcomePreview
-            action={props.action}
-            amount={props.amount}
-            selectedValidator={props.selectedValidator}
-            summary={props.summary}
-            t={t}
-            txPlan={txPlan}
-          />
-          {txPlan.warnings.map((warning) => (
-            <p className="warning" key={warning}>
-              {translateTxWarning(warning, t)}
-            </p>
-          ))}
-          {props.txProgress && (
-            <p className="progress-note">
-              <span className="spinner" />
-              {props.t.confirmingTx}: {props.txProgress}
-            </p>
-          )}
-          <details className="advanced-details">
-            <summary>{t.advancedDetails}</summary>
-            {txPlan.txs.map((tx, index) => (
-              <div className="tx-step" key={`${tx.to}-${tx.data}`}>
-                <span>{index + 1}</span>
-                <div>
-                  <strong>{translateTxLabel(tx.label, t)}</strong>
-                  <small>{compactAddress(tx.to, 10, 6)}</small>
-                </div>
-                <button type="button" title={t.copy} onClick={() => props.copyText(tx.data)}>
-                  <Copy size={14} />
-                </button>
+      <div className="overview-validator-list">
+        <div className="overview-validator-list-title">
+          <span>{t.validators}</span>
+          <strong>{accountReady ? stakedValidators.length : "--"}</strong>
+        </div>
+        {accountReady && stakedValidators.length > 0 ? (
+          stakedValidators.slice(0, 4).map((validator) => {
+            const validatorShare =
+              summary.totalStaked > 0n ? Number((validator.userStake * 10000n) / summary.totalStaked) / 100 : 0
+            return (
+              <div className="overview-validator-row" key={validator.address}>
+                <span className="overview-validator-main">
+                  <strong>{validator.label}</strong>
+                  <small>{compactAddress(validator.address, 8, 6)}</small>
+                </span>
+                <span className="overview-validator-position">
+                  <b>{formatSafe(validator.userStake)} SAFE</b>
+                  <small>{validatorShare.toFixed(1)}%</small>
+                </span>
+                <Progress value={validatorShare} variant="green" />
               </div>
-            ))}
-            <button type="button" className="soft-button full-width" onClick={props.exportSafePayload}>
-              <Database size={15} />
-              {t.exportSafePayload}
-            </button>
-          </details>
-          <button
-            type="button"
-            className="primary-button full-width"
-            disabled={props.isSubmitting || !canSubmit}
-            onClick={props.submitPlan}
-          >
-            {props.isSubmitting ? t.submitting : t.submitTransactions}
-          </button>
-        </div>
-      ) : (
-        <div className="empty-state">
-          <TerminalSquare size={28} />
-          <p>{t.emptyPlan}</p>
-        </div>
-      )}
+            )
+          })
+        ) : (
+          <p className="overview-validator-empty">{accountReady ? t.insufficientValidatorStake : t.connectWallet}</p>
+        )}
+      </div>
     </section>
   )
 }
 
-function TxOutcomePreview(props: {
-  action: Action
-  amount: string
-  selectedValidator: ValidatorInfo
-  summary: AccountSummary
-  t: MessageBundle
-  txPlan: TxPlan
-}) {
-  const { t } = props
-  const amount = safeParsedAmount(props.amount)
-  const simulationValue =
-    props.txPlan.simulation?.status === "failed"
-      ? t.simulationFailed
-      : props.txPlan.simulation?.status === "partial"
-        ? t.simulationPartial
-        : props.txPlan.simulation?.status === "passed"
-          ? t.simulationPassed
-          : t.notChecked
-  const rows: Array<{ label: string; value: string }> = [
-    { label: t.simulationStatus, value: simulationValue },
-    { label: t.transactionSteps, value: `${props.txPlan.txs.length}` },
-  ]
-
-  if (props.action === "stake" && amount !== null) {
-    rows.push({ label: t.balanceChange, value: `-${formatSafe(amount)} SAFE ${t.safeBalance}` })
-    rows.push({ label: t.validatorResult, value: `+${formatSafe(amount)} SAFE ${props.selectedValidator.label}` })
-  }
-  if (props.action === "unstake" && amount !== null) {
-    rows.push({ label: t.balanceChange, value: `${formatSafe(amount)} SAFE ${t.pendingWithdrawals}` })
-    rows.push({ label: t.validatorResult, value: `-${formatSafe(amount)} SAFE ${props.selectedValidator.label}` })
-  }
-  if (props.action === "claim-withdrawal") {
-    rows.push({
-      label: t.balanceChange,
-      value: `+${formatSafe(props.summary.claimableWithdrawals)} SAFE ${t.safeBalance}`,
-    })
-  }
-  if (props.action === "claim-rewards") {
-    rows.push({ label: t.balanceChange, value: `+${formatSafe(props.summary.claimableRewards)} SAFE ${t.safeBalance}` })
-  }
-  if (props.txPlan.txs.length > 1) {
-    rows.push({ label: t.approvalStep, value: t.approveNeeded })
-  }
-
-  return (
-    <div className="outcome-preview">
-      <div className="outcome-head">
-        <CheckCircle2 size={18} />
-        <span>
-          <strong>{t.expectedResult}</strong>
-          <small>{props.txPlan.simulation?.message ?? t.simulationExplainer}</small>
-        </span>
-      </div>
-      {rows.map((row) => (
-        <KeyValue key={row.label} label={row.label} value={row.value} />
-      ))}
-    </div>
-  )
+function compareBigintDesc(a: bigint, b: bigint) {
+  if (a === b) return 0
+  return a > b ? -1 : 1
 }
 
 export function WithdrawalsView(props: {
-  account: Address | null
-  copyText: (value: string) => Promise<void>
-  exportSafePayload: () => void
+  executeAction: (action?: Action) => Promise<void>
   isSubmitting: boolean
   t: MessageBundle
   selectAction: (action: Action) => void
-  selectedValidator: ValidatorInfo
   summary: AccountSummary
-  submitPlan: () => void
-  txPlan: TxPlan | null
   txProgress: string
 }) {
   const { t } = props
@@ -632,40 +505,35 @@ export function WithdrawalsView(props: {
         />
       </div>
       <div className="workflow-panel">
-        <button type="button" className="primary-button" onClick={() => props.selectAction("claim-withdrawal")}>
-          {t.claimWithdrawals}
+        <button
+          type="button"
+          className="primary-button"
+          disabled={props.isSubmitting}
+          onClick={() => {
+            props.selectAction("claim-withdrawal")
+            void props.executeAction("claim-withdrawal")
+          }}
+        >
+          {props.isSubmitting ? t.preparingAction : t.claimWithdrawals}
         </button>
-        <TxPlanPanel
-          action="claim-withdrawal"
-          amount="0"
-          account={props.account}
-          copyText={props.copyText}
-          exportSafePayload={props.exportSafePayload}
-          isSubmitting={props.isSubmitting}
-          selectedValidator={props.selectedValidator}
-          submitPlan={props.submitPlan}
-          t={t}
-          txPlan={props.txPlan}
-          txProgress={props.txProgress}
-          summary={props.summary}
-        />
+        {props.txProgress && (
+          <p className="action-progress-note">
+            <span className="spinner" />
+            {props.txProgress}
+          </p>
+        )}
       </div>
     </FullPanel>
   )
 }
 
 export function RewardsView(props: {
-  account: Address | null
-  copyText: (value: string) => Promise<void>
   dataStatus: DataStatus
-  exportSafePayload: () => void
+  executeAction: (action?: Action) => Promise<void>
   isSubmitting: boolean
   t: MessageBundle
   selectAction: (action: Action) => void
-  selectedValidator: ValidatorInfo
   summary: AccountSummary
-  submitPlan: () => void
-  txPlan: TxPlan | null
   txProgress: string
 }) {
   const { t } = props
@@ -685,23 +553,23 @@ export function RewardsView(props: {
         />
       </div>
       <div className="workflow-panel">
-        <button type="button" className="primary-button" onClick={() => props.selectAction("claim-rewards")}>
-          {t.claimRewards}
+        <button
+          type="button"
+          className="primary-button"
+          disabled={props.isSubmitting}
+          onClick={() => {
+            props.selectAction("claim-rewards")
+            void props.executeAction("claim-rewards")
+          }}
+        >
+          {props.isSubmitting ? t.preparingAction : t.claimRewards}
         </button>
-        <TxPlanPanel
-          action="claim-rewards"
-          amount="0"
-          account={props.account}
-          copyText={props.copyText}
-          exportSafePayload={props.exportSafePayload}
-          isSubmitting={props.isSubmitting}
-          selectedValidator={props.selectedValidator}
-          submitPlan={props.submitPlan}
-          t={t}
-          txPlan={props.txPlan}
-          txProgress={props.txProgress}
-          summary={props.summary}
-        />
+        {props.txProgress && (
+          <p className="action-progress-note">
+            <span className="spinner" />
+            {props.txProgress}
+          </p>
+        )}
       </div>
     </FullPanel>
   )

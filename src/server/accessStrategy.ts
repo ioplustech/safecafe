@@ -23,7 +23,7 @@ export async function verifySafeStakingAccess(address: Address, env: RpcGatewayE
   const cached = eligibleCache.get(key)
   if (cached && cached.expiresAt > Date.now()) return cached.result
   try {
-    const client = createAccessClient(env)
+    const client = await createAccessClient(env)
     const [safeBalance, totalStaked] = await Promise.all([
       client.readContract({
         address: CONTRACTS.safeToken,
@@ -52,7 +52,7 @@ export async function verifySubjectControl(signer: Address, subject: Address, en
   const cached = eligibleCache.get(key)
   if (cached && cached.expiresAt > Date.now()) return cached.result
   try {
-    const client = createAccessClient(env)
+    const client = await createAccessClient(env)
     const isOwner = await client.readContract({
       address: subject,
       abi: safeAccountAbi,
@@ -79,9 +79,9 @@ export function verifyRpcAccess(input: { signer: Address; subject: Address }, en
   return verifySafeStakingSubjectAccess(input, env)
 }
 
-function createAccessClient(env: RpcGatewayEnv) {
+async function createAccessClient(env: RpcGatewayEnv) {
   return createPublicClient({
     chain: ethereumMainnet,
-    transport: fallback(rpcUrls(env).map((url) => http(url, { timeout: 8_000 }))),
+    transport: fallback((await rpcUrls(env)).map((url) => http(url, { timeout: 8_000 }))),
   })
 }

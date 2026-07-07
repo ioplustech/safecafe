@@ -2,12 +2,14 @@ import type { IncomingMessage, ServerResponse } from "node:http"
 import react from "@vitejs/plugin-react"
 import { config as loadEnv } from "dotenv"
 import { defineConfig } from "vite"
+import { handleAccountLiveRequest } from "./src/server/accountLive"
 import { handleAgentApiRequest } from "./src/server/agentApi"
 import {
   handleEthereumRpcGatewayRequest,
   handleRpcChallengeRequest,
   handleRpcVerifyRequest,
 } from "./src/server/rpcGateway"
+import { handleSafePriceRequest } from "./src/server/safePrice"
 
 loadEnv()
 
@@ -25,7 +27,8 @@ export default defineConfig({
         ) => {
           const chunks: Buffer[] = []
           for await (const chunk of req) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
-          const request = new Request(`http://localhost${path}`, {
+          const incomingUrl = new URL(req.url ?? "/", "http://localhost")
+          const request = new Request(`http://localhost${path}${incomingUrl.search}`, {
             method: req.method,
             headers: req.headers as HeadersInit,
             body: req.method === "GET" || req.method === "HEAD" ? undefined : Buffer.concat(chunks),
@@ -50,6 +53,8 @@ export default defineConfig({
         const env = {
           SAFECAFE_RPC_ALLOW_ALL_WALLETS: process.env.SAFECAFE_RPC_ALLOW_ALL_WALLETS,
           SAFECAFE_AUTH_SECRET: process.env.SAFECAFE_AUTH_SECRET,
+          SAFECAFE_MOCK_ACCOUNT: process.env.SAFECAFE_MOCK_ACCOUNT,
+          SAFECAFE_MOCK_ACCOUNT_LIVE: process.env.SAFECAFE_MOCK_ACCOUNT_LIVE,
           SAFECAFE_RPC_URL: process.env.SAFECAFE_RPC_URL,
           SAFECAFE_RPC_URLS: process.env.SAFECAFE_RPC_URLS,
           SAFECAFE_LLM_API_BASE: process.env.SAFECAFE_LLM_API_BASE,
@@ -58,6 +63,12 @@ export default defineConfig({
         }
         server.middlewares.use("/api/agent", async (req, res) => {
           await handleApi(req, res, "/api/agent", (request) => handleAgentApiRequest(request, env))
+        })
+        server.middlewares.use("/api/account/live", async (req, res) => {
+          await handleApi(req, res, "/api/account/live", (request) => handleAccountLiveRequest(request, env))
+        })
+        server.middlewares.use("/api/price/safe", async (req, res) => {
+          await handleApi(req, res, "/api/price/safe", handleSafePriceRequest)
         })
         server.middlewares.use("/api/auth/challenge", async (req, res) => {
           await handleApi(req, res, "/api/auth/challenge", (request) => handleRpcChallengeRequest(request, env))

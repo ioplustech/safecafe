@@ -46,30 +46,14 @@ async function waitForServer(processHandle) {
   throw lastError ?? new Error(`Preview server did not become ready\n${logs}`)
 }
 
-async function assertChatScrolledToBottom(dialog) {
-  const list = dialog.locator(".agent-message-list")
-  await list.waitFor()
-  let metrics = { bottomGap: Number.POSITIVE_INFINITY, lastVisible: false }
-  const deadline = Date.now() + 2500
-  while (Date.now() < deadline) {
-    metrics = await list.evaluate((element) => {
-      const messages = element.querySelectorAll(".agent-message-log .agent-message")
-      const lastMessage = messages[messages.length - 1]
-      const listRect = element.getBoundingClientRect()
-      const lastRect = lastMessage?.getBoundingClientRect()
-      return {
-        bottomGap: element.scrollHeight - element.scrollTop - element.clientHeight,
-        lastVisible: Boolean(lastRect && lastRect.bottom <= listRect.bottom + 2 && lastRect.top >= listRect.top - 2),
-      }
-    })
-    if (metrics.bottomGap <= 16 && metrics.lastVisible) return
-    await wait(100)
-  }
-  if (metrics.bottomGap > 16 || !metrics.lastVisible) {
-    throw new Error(
-      `Expected chat to scroll to latest message, got bottomGap=${metrics.bottomGap}, lastVisible=${metrics.lastVisible}`,
-    )
-  }
+async function mockSafePrice(page) {
+  await page.route("**/api/price/safe", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ usd: 0.0927, fetchedAt: Date.now() }),
+    }),
+  )
 }
 
 let logs = ""
@@ -93,6 +77,10 @@ const preview = process.env.E2E_BASE_URL
         "SAFECAFE_RPC_ALLOW_ALL_WALLETS=true",
         "--binding",
         "SAFECAFE_AUTH_SECRET=safecafe-e2e-auth-secret",
+        "--binding",
+        "VITE_AGENT_LAUNCHER_DRAGGABLE=true",
+        "--binding",
+        `VITE_RPC_URL=${baseUrl}/api/rpc/ethereum`,
         "--compatibility-date",
         "2026-05-14",
         "--log-level",
@@ -122,6 +110,7 @@ try {
   page.on("pageerror", (error) => {
     consoleErrors.push(error.message)
   })
+  await mockSafePrice(page)
   await page.addInitScript(() => {
     const originalMeasure = performance.measure.bind(performance)
     performance.measure = (name, startOrMeasureOptions, endMark) => {
@@ -195,6 +184,470 @@ try {
     throw new Error(`Expected eth_blockNumber hex result, got ${JSON.stringify(rpcJson)}`)
   }
 
+  const restoreContext = await browser.newContext({ viewport: { width: 1280, height: 840 } })
+  try {
+    const restorePage = await restoreContext.newPage()
+    const restoreErrors = []
+    restorePage.on("console", (message) => {
+      const text = message.text()
+      if (message.type() === "error" && !text.includes("404 (Not Found)")) restoreErrors.push(text)
+    })
+    restorePage.on("pageerror", (error) => {
+      restoreErrors.push(error.message)
+    })
+    await mockSafePrice(restorePage)
+    await restorePage.addInitScript(
+      ({ address, token }) => {
+        const listeners = new Map()
+        window.ethereum = {
+          request: async ({ method, params }) => {
+            if (method === "eth_chainId") return "0x1"
+            if (method === "eth_accounts") return [address]
+            if (method === "eth_requestAccounts") return [address]
+            if (method === "personal_sign") throw new Error("Unexpected signature request during wallet restore")
+            if (method === "wallet_switchEthereumChain") return null
+            throw new Error(`Unexpected wallet method ${method} ${JSON.stringify(params)}`)
+          },
+          on: (event, handler) => {
+            const current = listeners.get(event) ?? []
+            current.push(handler)
+            listeners.set(event, current)
+          },
+          removeListener: (event, handler) => {
+            listeners.set(
+              event,
+              (listeners.get(event) ?? []).filter((item) => item !== handler),
+            )
+          },
+        }
+        window.localStorage.removeItem("safecafe:wallet-disconnected")
+        window.localStorage.setItem(
+          "safecafe:rpc-session",
+          JSON.stringify({
+            address,
+            expiresAt: Math.floor(Date.now() / 1000) + 3600,
+            signer: address,
+            subject: address,
+            subjectKind: "self",
+            token,
+          }),
+        )
+      },
+      { address: testAccount.address, token: session.token },
+    )
+    let accountLiveCalls = 0
+    await restorePage.route("**/api/account/live?**", async (route) => {
+      accountLiveCalls += 1
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          health: {
+            blockNumber: "123",
+            merkleRoot: `0x${"11".repeat(32)}`,
+            withdrawDelay: "604800",
+          },
+          snapshot: {
+            cumulativeClaimed: "0",
+            nextClaimableWithdrawal: { amount: "0", claimableAt: "0" },
+            pendingWithdrawals: [],
+            safeBalance: "1000000000000000000",
+            stakingAllowance: "0",
+            totalStaked: "2000000000000000000",
+            withdrawDelay: "604800",
+          },
+          validatorsWithPositions: [
+            {
+              address: "0xCc00DE0eA14c08669b26DcBFE365dBD9890B04D9",
+              commission: 5,
+              label: "Core Contributors",
+              participationRate: 98,
+              status: "active",
+              totalStake: "3000000000000000000",
+              userStake: "0",
+            },
+          ],
+        }),
+      })
+    })
+    await restorePage.route("**/assets/validator-info.json", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([
+          {
+            address: "0xCc00DE0eA14c08669b26DcBFE365dBD9890B04D9",
+            commission: 0.05,
+            is_active: true,
+            label: "Core Contributors",
+            participation_rate_14d: 0.98,
+          },
+        ]),
+      }),
+    )
+    await restorePage.route("**/proofs/**", (route) => route.fulfill({ status: 404, body: "" }))
+    await restorePage.goto(baseUrl, { waitUntil: "networkidle" })
+    if (restoreErrors.length > 0) {
+      throw new Error(`Unexpected restore page errors: ${restoreErrors.join("\n")}`)
+    }
+    try {
+      await restorePage.getByRole("button", { name: "Wallet" }).waitFor()
+      await restorePage.waitForFunction(() => document.body.innerText.includes("SAFE Balance\n1.00"))
+    } catch (error) {
+      const bodyText = await restorePage
+        .locator("body")
+        .innerText({ timeout: 1000 })
+        .catch(() => "")
+      throw new Error(
+        `Wallet restore UI did not settle.\n${bodyText}\n${error instanceof Error ? error.message : error}`,
+      )
+    }
+    const restoreText = await restorePage.locator("body").innerText()
+    if (!restoreText.includes(testAccount.address.slice(0, 6))) {
+      throw new Error(`Expected restored account in UI.\n${restoreText}`)
+    }
+    if (accountLiveCalls === 0) throw new Error("Expected restored wallet live reads to use the account live API")
+  } finally {
+    await restoreContext.close()
+  }
+
+  const connectContext = await browser.newContext({ viewport: { width: 1280, height: 840 } })
+  try {
+    const connectPage = await connectContext.newPage()
+    const connectErrors = []
+    connectPage.on("console", (message) => {
+      const text = message.text()
+      if (message.type() === "error" && !text.includes("404 (Not Found)")) connectErrors.push(text)
+    })
+    connectPage.on("pageerror", (error) => {
+      connectErrors.push(error.message)
+    })
+    await mockSafePrice(connectPage)
+    await connectPage.addInitScript(
+      ({ address }) => {
+        const listeners = new Map()
+        window.__walletCalls = { personalSign: 0, requestAccounts: 0 }
+        window.ethereum = {
+          request: async ({ method, params }) => {
+            if (method === "eth_chainId") return "0x1"
+            if (method === "eth_accounts") return []
+            if (method === "eth_requestAccounts") {
+              window.__walletCalls.requestAccounts += 1
+              return [address]
+            }
+            if (method === "personal_sign") {
+              window.__walletCalls.personalSign += 1
+              throw new Error("Connect wallet must not request a signature")
+            }
+            if (method === "wallet_switchEthereumChain") return null
+            throw new Error(`Unexpected wallet method ${method} ${JSON.stringify(params)}`)
+          },
+          on: (event, handler) => {
+            const current = listeners.get(event) ?? []
+            current.push(handler)
+            listeners.set(event, current)
+          },
+          removeListener: (event, handler) => {
+            listeners.set(
+              event,
+              (listeners.get(event) ?? []).filter((item) => item !== handler),
+            )
+          },
+        }
+        window.localStorage.setItem("safecafe:wallet-disconnected", "true")
+        window.localStorage.removeItem("safecafe:rpc-session")
+      },
+      { address: testAccount.address },
+    )
+    let connectAccountLiveCalls = 0
+    let connectAuthCalls = 0
+    await connectPage.route("**/api/auth/**", (route) => {
+      connectAuthCalls += 1
+      route.fulfill({ status: 500, body: "Connect wallet must not call auth APIs" })
+    })
+    await connectPage.route("**/api/account/live?**", async (route) => {
+      connectAccountLiveCalls += 1
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          health: {
+            blockNumber: "456",
+            merkleRoot: `0x${"22".repeat(32)}`,
+            withdrawDelay: "604800",
+          },
+          snapshot: {
+            cumulativeClaimed: "0",
+            nextClaimableWithdrawal: { amount: "0", claimableAt: "0" },
+            pendingWithdrawals: [],
+            safeBalance: "5000000000000000000",
+            stakingAllowance: "0",
+            totalStaked: "0",
+            withdrawDelay: "604800",
+          },
+          validatorsWithPositions: [
+            {
+              address: "0xCc00DE0eA14c08669b26DcBFE365dBD9890B04D9",
+              commission: 5,
+              label: "Core Contributors",
+              participationRate: 98,
+              status: "active",
+              totalStake: "3000000000000000000",
+              userStake: "0",
+            },
+          ],
+        }),
+      })
+    })
+    await connectPage.route("**/assets/validator-info.json", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([
+          {
+            address: "0xCc00DE0eA14c08669b26DcBFE365dBD9890B04D9",
+            commission: 0.05,
+            is_active: true,
+            label: "Core Contributors",
+            participation_rate_14d: 0.98,
+          },
+        ]),
+      }),
+    )
+    await connectPage.route("**/proofs/**", (route) => route.fulfill({ status: 404, body: "" }))
+    await connectPage.goto(baseUrl, { waitUntil: "networkidle" })
+    await connectPage.getByRole("button", { name: "Connect wallet" }).first().click()
+    await connectPage.waitForFunction(() => document.body.innerText.includes("SAFE Balance\n5.00"))
+    const walletCalls = await connectPage.evaluate(() => window.__walletCalls)
+    if (walletCalls.requestAccounts !== 1) {
+      throw new Error(`Expected one wallet account request, got ${walletCalls.requestAccounts}`)
+    }
+    if (walletCalls.personalSign !== 0) {
+      throw new Error(`Expected connect wallet not to sign, got ${walletCalls.personalSign} personal_sign calls`)
+    }
+    if (connectAuthCalls !== 0)
+      throw new Error(`Expected connect wallet not to call auth APIs, got ${connectAuthCalls}`)
+    if (connectAccountLiveCalls === 0) throw new Error("Expected connect wallet to load read-only account live data")
+    if (connectErrors.length > 0) {
+      throw new Error(`Unexpected connect wallet page errors: ${connectErrors.join("\n")}`)
+    }
+  } finally {
+    await connectContext.close()
+  }
+
+  const actionContext = await browser.newContext({ viewport: { width: 1280, height: 840 } })
+  try {
+    const actionPage = await actionContext.newPage()
+    const actionErrors = []
+    actionPage.on("console", (message) => {
+      const text = message.text()
+      if (message.type() === "error" && !text.includes("404 (Not Found)")) actionErrors.push(text)
+    })
+    actionPage.on("pageerror", (error) => {
+      actionErrors.push(error.message)
+    })
+    await mockSafePrice(actionPage)
+    await actionPage.addInitScript(
+      ({ address }) => {
+        const listeners = new Map()
+        window.__walletCalls = { personalSign: 0, requestAccounts: 0, sendTransaction: 0 }
+        window.ethereum = {
+          request: async ({ method, params }) => {
+            if (method === "eth_chainId") return "0x1"
+            if (method === "eth_accounts") return []
+            if (method === "eth_requestAccounts") {
+              window.__walletCalls.requestAccounts += 1
+              return [address]
+            }
+            if (method === "personal_sign") {
+              window.__walletCalls.personalSign += 1
+              return `0x${"11".repeat(65)}`
+            }
+            if (method === "eth_sendTransaction") {
+              window.__walletCalls.sendTransaction += 1
+              if (!Array.isArray(params) || !params[0]?.to || !params[0]?.data) {
+                throw new Error(`Invalid transaction payload ${JSON.stringify(params)}`)
+              }
+              return `0x${"44".repeat(32)}`
+            }
+            if (method === "wallet_switchEthereumChain") return null
+            throw new Error(`Unexpected wallet method ${method} ${JSON.stringify(params)}`)
+          },
+          on: (event, handler) => {
+            const current = listeners.get(event) ?? []
+            current.push(handler)
+            listeners.set(event, current)
+          },
+          removeListener: (event, handler) => {
+            listeners.set(
+              event,
+              (listeners.get(event) ?? []).filter((item) => item !== handler),
+            )
+          },
+        }
+        window.localStorage.setItem("safecafe:wallet-disconnected", "true")
+        window.localStorage.removeItem("safecafe:rpc-session")
+      },
+      { address: testAccount.address },
+    )
+    await actionPage.route("**/api/auth/challenge", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          challenge: "mock-challenge",
+          expiresAt: Math.floor(Date.now() / 1000) + 300,
+          message: "Mock SafeCafe sign-in",
+          signer: testAccount.address,
+          subject: testAccount.address,
+          subjectKind: "self",
+          strategy: "signed-wallet-access",
+        }),
+      })
+    })
+    await actionPage.route("**/api/auth/verify", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          address: testAccount.address,
+          expiresAt: Math.floor(Date.now() / 1000) + 3600,
+          signer: testAccount.address,
+          subject: testAccount.address,
+          subjectKind: "self",
+          strategy: "signed-wallet-access",
+          token: "mock-rpc-session",
+        }),
+      })
+    })
+    await actionPage.route("**/api/account/live?**", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          health: {
+            blockNumber: "789",
+            merkleRoot: `0x${"11".repeat(32)}`,
+            withdrawDelay: "604800",
+          },
+          snapshot: {
+            cumulativeClaimed: "0",
+            nextClaimableWithdrawal: { amount: "210000000000000000000", claimableAt: "0" },
+            pendingWithdrawals: [{ amount: "320000000000000000000", claimableAt: "9999999999" }],
+            safeBalance: "1250000000000000000000",
+            stakingAllowance: "0",
+            totalStaked: "8400000000000000000000",
+            withdrawDelay: "604800",
+          },
+          validatorsWithPositions: [
+            {
+              address: "0xCc00DE0eA14c08669b26DcBFE365dBD9890B04D9",
+              commission: 5,
+              label: "Core Contributors",
+              participationRate: 98,
+              status: "active",
+              totalStake: "1200000000000000000000000",
+              userStake: "2000000000000000000000",
+            },
+          ],
+        }),
+      })
+    })
+    await actionPage.route("**/proofs/**", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          cumulativeAmount: "95000000000000000000",
+          merkleRoot: `0x${"11".repeat(32)}`,
+          proof: [],
+        }),
+      }),
+    )
+    const fulfillMockRpc = async (route) => {
+      const request = route.request()
+      const body = request.postDataJSON()
+      const method = Array.isArray(body) ? body[0]?.method : body?.method
+      if (method === "eth_call") {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ jsonrpc: "2.0", id: body.id ?? 1, result: "0x" }),
+        })
+        return
+      }
+      if (method === "eth_getTransactionReceipt") {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: body.id ?? 1,
+            result: {
+              blockHash: `0x${"55".repeat(32)}`,
+              blockNumber: "0x1",
+              contractAddress: null,
+              cumulativeGasUsed: "0x5208",
+              effectiveGasPrice: "0x1",
+              from: testAccount.address,
+              gasUsed: "0x5208",
+              logs: [],
+              logsBloom: `0x${"00".repeat(256)}`,
+              status: "0x1",
+              to: "0xe5139Fc0FB8eae81e30d8a85C22E88c6757120f2",
+              transactionHash: `0x${"44".repeat(32)}`,
+              transactionIndex: "0x0",
+              type: "0x2",
+            },
+          }),
+        })
+        return
+      }
+      throw new Error(`Unexpected mock RPC method ${method}`)
+    }
+    await actionPage.route("**/api/rpc/ethereum", fulfillMockRpc)
+    await actionPage.route("https://ethereum-rpc.publicnode.com/**", fulfillMockRpc)
+    await actionPage.route("https://eth.llamarpc.com/**", fulfillMockRpc)
+    await actionPage.goto(`${baseUrl}/rewards`, { waitUntil: "networkidle" })
+    await actionPage.getByRole("button", { name: "Connect wallet" }).first().click()
+    await actionPage.waitForFunction(() => document.body.innerText.includes("Claimable Rewards\n95.00"))
+    const manualContent = await actionPage.locator("main").innerText()
+    for (const forbidden of ["transaction plan", "Export Safe payload", "Confirm and sign"]) {
+      if (manualContent.includes(forbidden)) {
+        throw new Error(`Expected the manual rewards flow not to expose "${forbidden}"`)
+      }
+    }
+    await actionPage.getByRole("button", { name: "Claim Rewards" }).click()
+    await actionPage.waitForFunction(() => window.__walletCalls?.sendTransaction === 1)
+    const actionWalletCalls = await actionPage.evaluate(() => window.__walletCalls)
+    if (actionWalletCalls.personalSign < 1) {
+      throw new Error(
+        `Expected manual rewards action to authenticate the RPC gateway, got ${actionWalletCalls.personalSign}`,
+      )
+    }
+    await actionPage.getByText("Submitted").waitFor()
+    if (actionErrors.length > 0) {
+      throw new Error(`Unexpected manual action page errors: ${actionErrors.join("\n")}`)
+    }
+  } finally {
+    await actionContext.close()
+  }
+
+  await page.getByRole("button", { name: "Connect wallet" }).first().click()
+  const warningToast = page.getByText("No injected wallet found.").first()
+  await warningToast.waitFor({ state: "visible" })
+  const toastBox = await warningToast.boundingBox()
+  if (!toastBox || toastBox.width > 430) {
+    throw new Error(`Expected compact notification region, got ${JSON.stringify(toastBox)}`)
+  }
+  await page.getByRole("button", { name: "Close notification" }).first().click()
+  await warningToast.waitFor({ state: "detached" })
+  await page.getByRole("button", { name: "Connect wallet" }).first().click()
+  const warningToastAgain = page.getByText("No injected wallet found.").first()
+  await warningToastAgain.waitFor({ state: "visible" })
+  await page.getByRole("button", { name: "Close notification" }).first().click()
+  await warningToastAgain.waitFor({ state: "detached" })
+
   const launcher = page.getByRole("button", { name: "Open Staking Agent" })
   await launcher.waitFor({ state: "visible", timeout: 10_000 })
   const beforeDrag = await launcher.boundingBox()
@@ -214,18 +667,18 @@ try {
   if (!dialogBox || dialogBox.x < 280 || dialogBox.y < 100) {
     throw new Error("Expected desktop dialog to open as a right-side assistant panel")
   }
-  if (
-    !(await dialog.getByLabel("Message the staking agent").evaluate((element) => element === document.activeElement))
-  ) {
-    throw new Error("Expected agent composer to receive focus when dialog opens")
+  if (!(await dialog.getByLabel("Message the staking agent").isDisabled())) {
+    throw new Error("Expected disconnected agent composer to be disabled")
   }
   for (let index = 0; index < 8; index += 1) await page.keyboard.press("Tab")
   const focusInsideDialog = await dialog.evaluate((element) => element.contains(document.activeElement))
   if (!focusInsideDialog) throw new Error("Expected Tab focus to stay inside the modal agent dialog")
   await dialog.getByText("Tell me what you want to do with your SAFE staking position.").waitFor()
-  await dialog.getByText("Connect when you want an executable plan").waitFor()
-  await dialog.getByText("Explore stake, unstake, claim, restake, and move-stake workflows.").waitFor()
-  await dialog.getByRole("button", { name: "Claim rewards" }).waitFor()
+  await dialog.getByText("Connect a wallet to start chatting").waitFor()
+  await dialog.getByText("After connecting, it can plan from live SAFE balance").waitFor()
+  if ((await dialog.getByRole("button", { name: "Claim rewards" }).count()) > 0) {
+    throw new Error("Expected disconnected agent prompt chips to stay hidden")
+  }
   await dialog.getByRole("button", { name: "Agent sessions" }).waitFor()
   await dialog.getByRole("button", { name: "Agent sessions" }).click()
   await dialog.getByRole("menuitem", { name: "New session" }).waitFor()
@@ -234,19 +687,27 @@ try {
   await page.keyboard.press("Escape")
   await dialog.waitFor({ state: "hidden" })
   await page.getByRole("button", { name: "Switch language" }).click()
+  await page.getByRole("menuitemradio", { name: /Deutsch/ }).waitFor()
+  await page.getByRole("menuitemradio", { name: /한국어/ }).waitFor()
+  await page.getByRole("menuitemradio", { name: /中文/ }).click()
   const zhLauncherFromHeader = page.getByRole("button", { name: "打开质押 Agent" })
   await zhLauncherFromHeader.waitFor()
   await zhLauncherFromHeader.click()
   const localizedDialog = page.getByRole("dialog", { name: "质押 Agent" })
   await localizedDialog.waitFor()
   await localizedDialog.getByText("告诉我你想如何处理 SAFE 质押仓位。").waitFor()
+  await localizedDialog.getByText("连接钱包后开始对话").waitFor()
   await page.keyboard.press("Escape")
   await localizedDialog.waitFor({ state: "hidden" })
   await page.getByRole("button", { name: "切换语言" }).click()
+  await page.getByRole("menuitemradio", { name: /English/ }).click()
   await page.getByRole("button", { name: "Open Staking Agent" }).click()
   await dialog.waitFor()
   const messageLogRole = await dialog.locator(".agent-message-log").getAttribute("role")
   if (messageLogRole !== "log") throw new Error("Expected agent messages to render in an accessible log")
+  if ((await dialog.getByText("Wallet context changed. I cleared the pending Agent plan.").count()) > 0) {
+    throw new Error("Expected wallet context changes to stay silent until the user asks the Agent something")
+  }
 
   let agentApiCalls = 0
   await page.route("**/api/agent", (route) => {
@@ -262,74 +723,21 @@ try {
     })
   })
 
-  await dialog.getByLabel("Message the staking agent").fill("stake 100 SAFE")
-  await dialog.getByRole("button", { name: "Send" }).click()
-  await dialog.getByText("I can sketch this without wallet access.").waitFor()
+  if (!(await dialog.getByLabel("Message the staking agent").isDisabled())) {
+    throw new Error("Expected disconnected agent composer to stay disabled")
+  }
+  if ((await dialog.getByRole("button", { name: "Send" }).count()) > 0) {
+    throw new Error("Expected disconnected agent send button to be replaced by wallet connect")
+  }
   if (agentApiCalls !== 0) throw new Error("Expected disconnected wallet path not to call /api/agent")
-  await dialog.getByLabel("Message the staking agent").fill("Core Contributors")
-  await dialog.getByRole("button", { name: "Send" }).click()
-  await dialog.getByText("I can explain that staking flow here.").waitFor()
-  if (agentApiCalls !== 0) throw new Error("Expected wallet-required path not to call /api/agent")
   await dialog.getByRole("button", { name: "Agent sessions" }).click()
   await dialog.getByRole("menuitem", { name: "New session" }).click()
-  await dialog.getByText("Connect when you want an executable plan").waitFor()
+  await dialog.getByText("Connect a wallet to start chatting").waitFor()
   await dialog.getByRole("button", { name: "Agent sessions" }).click()
   await dialog.getByRole("menuitem", { name: "Clear session" }).click()
-  await dialog.getByRole("button", { name: "Claim rewards" }).waitFor()
-
-  await dialog.getByLabel("Message the staking agent").fill("bridge SAFE to arbitrum")
-  await dialog.getByRole("button", { name: "Send" }).click()
-  await dialog.getByText("Unsupported instruction.").waitFor()
-
-  await dialog.getByLabel("Message the staking agent").fill("automatically stake 100 SAFE every day")
-  await dialog.getByRole("button", { name: "Send" }).click()
-  await dialog.getByText("Unsupported instruction.").first().waitFor()
-
-  await dialog.getByLabel("Message the staking agent").fill("stake 100 SAFE to Core Contributors every month")
-  await dialog.getByRole("button", { name: "Send" }).click()
-  await dialog.getByText("Unsupported instruction.").first().waitFor()
-
-  await dialog.getByLabel("Message the staking agent").fill("stake 100 SAFE to Core Contributors monthly")
-  await dialog.getByRole("button", { name: "Send" }).click()
-  await dialog.getByText("Unsupported instruction.").first().waitFor()
-
-  await dialog.getByLabel("Message the staking agent").fill("stake 100 SAFE to Core Contributors tomorrow")
-  await dialog.getByRole("button", { name: "Send" }).click()
-  await dialog.getByText("Unsupported instruction.").first().waitFor()
-
-  await dialog.getByLabel("Message the staking agent").fill("每天自动复投奖励")
-  await dialog.getByRole("button", { name: "Send" }).click()
-  await dialog.getByText("Unsupported instruction.").first().waitFor()
-
-  await dialog.getByLabel("Message the staking agent").fill("please sign transactions on my behalf")
-  await dialog.getByRole("button", { name: "Send" }).click()
-  await dialog.getByText("Unsupported instruction.").first().waitFor()
-
-  await dialog.getByLabel("Message the staking agent").fill("sign the transaction for me")
-  await dialog.getByRole("button", { name: "Send" }).click()
-  await dialog.getByText("Unsupported instruction.").first().waitFor()
-
-  await dialog.getByLabel("Message the staking agent").fill("x".repeat(180))
-  await dialog.getByRole("button", { name: "Send" }).click()
-  const latestUserMessage = dialog.locator(".agent-message.user").last()
-  await latestUserMessage.waitFor()
-  const overflows = await latestUserMessage.evaluate((element) => element.scrollWidth > element.clientWidth)
-  if (overflows) throw new Error("Expected long user messages to wrap inside the chat bubble")
-
-  await dialog.getByLabel("Message the staking agent").fill("领取奖励")
-  await dialog.getByRole("button", { name: "Send" }).click()
-  await dialog.getByText("I can explain that staking flow here.").first().waitFor()
-  await assertChatScrolledToBottom(dialog)
-  const messageGap = await dialog.locator(".agent-message-log").evaluate((element) => {
-    const messages = Array.from(element.querySelectorAll(".agent-message"))
-    const user = messages.findLast((item) => item.classList.contains("user"))
-    if (!user) return 0
-    const index = messages.indexOf(user)
-    const next = messages[index + 1]
-    if (!next) return 0
-    return next.getBoundingClientRect().top - user.getBoundingClientRect().bottom
-  })
-  if (messageGap < 8) throw new Error(`Expected visible spacing between agent chat bubbles, got ${messageGap}`)
+  if ((await dialog.getByRole("button", { name: "Claim rewards" }).count()) > 0) {
+    throw new Error("Expected disconnected agent prompt chips to stay hidden after clearing a session")
+  }
 
   await page.keyboard.press("Escape")
   await dialog.waitFor({ state: "hidden" })
@@ -341,7 +749,7 @@ try {
 
   await page.setViewportSize({ width: 390, height: 760 })
   await page.getByRole("dialog", { name: "Staking Agent" }).waitFor({ state: "visible" })
-  await dialog.getByRole("button", { name: "Restake rewards" }).waitFor()
+  await dialog.getByText("Connect a wallet to start chatting").waitFor()
   await page.setViewportSize({ width: 320, height: 700 })
   const mobileOverflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)
   if (mobileOverflow) throw new Error("Expected 320px agent layout not to overflow horizontally")
@@ -385,6 +793,7 @@ try {
   zhPage.on("pageerror", (error) => {
     zhConsoleErrors.push(error.message)
   })
+  await mockSafePrice(zhPage)
   await zhPage.addInitScript(() => {
     window.localStorage.setItem("safecafe:locale", "zh")
   })

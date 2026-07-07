@@ -60,6 +60,7 @@ export type AgentChatDialogProps = {
   isSubmitting: boolean
   rpcAuthToken: string | null
   onApplyPlan: (plan: TxPlan) => void
+  onAuthenticateAgent: () => Promise<string | null>
   onClose: () => void
   onConnectWallet: () => Promise<void>
   onExportPlan: (plan: TxPlan) => void
@@ -83,7 +84,7 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
   const messageEndRef = useRef<HTMLDivElement>(null)
 
   const activeSession = sessions.find((session) => session.id === activeSessionId) ?? sessions[0]
-  const currentContextKey = `${props.context.account ?? ""}:${props.context.subjectAccount ?? ""}:${props.context.chainId ?? ""}:${props.context.liveBlock ?? ""}:${agentAccessKey(props.context)}`
+  const currentContextKey = agentContextKey(props.context)
   const isStale = Boolean(activeSession.draft && activeSession.draftKey && activeSession.draftKey !== currentContextKey)
   const blocked = activeSession.draft?.risks.some((risk) => risk.severity === "blocked") ?? false
   const warnings = useMemo(
@@ -93,6 +94,7 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
   const canUsePlan = Boolean(
     activeSession.executablePlan && !blocked && !isStale && (warnings.length === 0 || activeSession.warningsAccepted),
   )
+  const canChat = Boolean(props.context.account)
   const agentAccess = hasAgentServiceAccess(props.context)
   const isBusy = isDrafting || isStreaming || props.isSubmitting
   const lastMessage = activeSession.messages[activeSession.messages.length - 1]
@@ -177,16 +179,19 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
               executablePlan: null,
               pendingIntentText: "",
               warningsAccepted: false,
-              messages: [...session.messages, createMessage("tool", props.t.agentContextChanged)],
             }
           : session,
       ),
     )
-  }, [activeSessionId, currentContextKey, props.t.agentContextChanged])
+  }, [activeSessionId, currentContextKey])
 
   async function send(text = input) {
     const trimmed = text.trim()
     if (!trimmed || isBusy) return
+    if (!canChat) {
+      setInput("")
+      return
+    }
     const requestId = requestSeqRef.current + 1
     requestSeqRef.current = requestId
     const requestSessionId = activeSession.id
@@ -221,7 +226,6 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
           ),
         ],
       }))
-      if (agentAccess) void appendAgentReply(trimmed, history, requestId, requestSessionId)
       return
     }
     updateActiveSession((session) => ({ ...session, pendingIntentText: "" }))
@@ -257,6 +261,15 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
       return
     }
 
+    const authToken = await props.onAuthenticateAgent()
+    if (!authToken) {
+      updateActiveSession((session) => ({
+        ...session,
+        messages: [...session.messages, createMessage("assistant", props.t.agentAuthRequired)],
+      }))
+      return
+    }
+
     setIsDrafting(true)
     updateActiveSession((session) => ({
       ...session,
@@ -284,7 +297,7 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
           createMessage("assistant", simulated ? props.t.agentPlanReady : props.t.agentPlanDrafted),
         ],
       }))
-      void appendAgentReply(trimmed, history, requestId, requestSessionId)
+      void appendAgentReply(trimmed, history, requestId, requestSessionId, authToken)
     } catch (error) {
       finishLastLoadingTool(requestSessionId, props.t.agentToolFailed)
       updateSession(requestSessionId, (session) => ({
@@ -304,6 +317,7 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
     history: Array<{ role: "assistant" | "user"; content: string }>,
     requestId: number,
     sessionId: string,
+    authToken: string,
   ) {
     if (!agentAccess) return
     const assistantId = createId()
@@ -315,7 +329,7 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
     try {
       await requestAgentReplyStream(
         {
-          authToken: props.rpcAuthToken,
+          authToken,
           message,
           messages: history,
           context: toAgentChatContext(props.context),
@@ -525,7 +539,7 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
 
       <div className="agent-message-list" ref={messageListRef}>
         <article className="agent-message assistant">{props.t.agentGreeting}</article>
-        {!props.context.account ? (
+        {!canChat ? (
           <AgentDisconnectedPanel t={props.t} onConnectWallet={props.onConnectWallet} />
         ) : (
           !agentAccess && (
@@ -535,18 +549,20 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
             </article>
           )
         )}
-        <div className="agent-prompt-chip-row">
-          {[
-            props.t.agentPromptClaimRewards,
-            props.t.agentPromptStake,
-            props.t.agentPromptRestake,
-            props.t.agentPromptRebalance,
-          ].map((prompt) => (
-            <button type="button" key={prompt} disabled={isBusy} onClick={() => void send(prompt)}>
-              {prompt}
-            </button>
-          ))}
-        </div>
+        {canChat && (
+          <div className="agent-prompt-chip-row">
+            {[
+              props.t.agentPromptClaimRewards,
+              props.t.agentPromptStake,
+              props.t.agentPromptRestake,
+              props.t.agentPromptRebalance,
+            ].map((prompt) => (
+              <button type="button" key={prompt} disabled={isBusy} onClick={() => void send(prompt)}>
+                {prompt}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="agent-message-log" role="log" aria-live="polite" aria-relevant="additions">
           {activeSession.messages.map((message) => (
             <AgentMessageView
@@ -568,6 +584,7 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
             warnings={warnings}
             warningsAccepted={activeSession.warningsAccepted}
             canUsePlan={canUsePlan}
+            safeSubject={props.context.subjectKind === "safe"}
             isSubmitting={props.isSubmitting}
             onAcceptWarnings={(value) => updateActiveSession((session) => ({ ...session, warningsAccepted: value }))}
             onApply={() => activeSession.executablePlan && props.onApplyPlan(activeSession.executablePlan)}
@@ -585,20 +602,28 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
             ref={composerRef}
             rows={2}
             value={input}
-            placeholder={props.t.agentPlaceholder}
+            placeholder={canChat ? props.t.agentPlaceholder : props.t.agentConnectToChat}
+            disabled={!canChat}
             onChange={(event) => setInput(event.target.value)}
             onKeyDown={handleComposerKeyDown}
           />
         </label>
-        <button
-          type="button"
-          className="agent-send-button"
-          disabled={isBusy || !input.trim()}
-          onClick={() => void send()}
-        >
-          {isBusy ? <Loader2 size={16} className="spin-icon" /> : <Send size={16} />}
-          {isBusy ? props.t.agentThinking : props.t.agentSend}
-        </button>
+        {canChat ? (
+          <button
+            type="button"
+            className="agent-send-button"
+            disabled={isBusy || !input.trim()}
+            onClick={() => void send()}
+          >
+            {isBusy ? <Loader2 size={16} className="spin-icon" /> : <Send size={16} />}
+            {isBusy ? props.t.agentThinking : props.t.agentSend}
+          </button>
+        ) : (
+          <button type="button" className="agent-connect-button wide" onClick={() => void props.onConnectWallet()}>
+            <Wallet size={16} />
+            {props.t.connectWallet}
+          </button>
+        )}
       </div>
     </section>
   )
@@ -685,6 +710,7 @@ function AgentPlanCard(props: {
   warningsAccepted: boolean
   canUsePlan: boolean
   isSubmitting: boolean
+  safeSubject: boolean
   onAcceptWarnings: (value: boolean) => void
   onApply: () => void
   onExport: () => void
@@ -761,9 +787,13 @@ function AgentPlanCard(props: {
           type="button"
           className="primary-button"
           disabled={!props.canUsePlan || props.isSubmitting}
-          onClick={props.onSubmit}
+          onClick={props.safeSubject ? props.onExport : props.onSubmit}
         >
-          {props.isSubmitting ? props.t.submitting : props.t.agentOpenWallet}
+          {props.isSubmitting
+            ? props.t.submitting
+            : props.safeSubject
+              ? props.t.exportSafePayload
+              : props.t.agentOpenWallet}
         </button>
       </div>
     </article>
@@ -852,6 +882,32 @@ function shouldStartNewIntent(input: string) {
 function agentAccessKey(context: AgentContext) {
   if (!context.account || !(context.subjectAccount ?? context.account) || !context.liveSnapshot) return "locked"
   return context.summary.safeBalance > 0n || context.summary.totalStaked > 0n ? "eligible" : "empty"
+}
+
+function agentContextKey(context: AgentContext) {
+  const snapshot = context.liveSnapshot
+  const pending = snapshot?.pendingWithdrawals.map((item) => `${item.amount}:${item.claimableAt}`).join(",") ?? ""
+  const nextWithdrawal = snapshot?.nextClaimableWithdrawal
+    ? `${snapshot.nextClaimableWithdrawal.amount}:${snapshot.nextClaimableWithdrawal.claimableAt}`
+    : ""
+  return [
+    context.account ?? "",
+    context.subjectAccount ?? "",
+    context.chainId ?? "",
+    agentAccessKey(context),
+    context.summary.safeBalance,
+    context.summary.totalStaked,
+    context.summary.claimableRewards,
+    context.summary.claimableWithdrawals,
+    context.summary.pendingWithdrawals,
+    snapshot?.stakingAllowance ?? "",
+    snapshot?.cumulativeClaimed ?? "",
+    nextWithdrawal,
+    pending,
+    context.rewardProof?.cumulativeAmount ?? "",
+    context.rewardProof?.merkleRoot ?? "",
+    context.liveMerkleRoot ?? "",
+  ].join(":")
 }
 
 function localizeClarification(question: string, t: MessageBundle) {
