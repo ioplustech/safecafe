@@ -247,6 +247,7 @@ function validateRpcRequest(request: JsonRpcRequest): { code: number; message: s
     method === "eth_getBalance" ||
     method === "eth_getBlockByNumber" ||
     method === "eth_getCode" ||
+    method === "eth_getTransactionByHash" ||
     method === "eth_getTransactionReceipt"
   ) {
     return null

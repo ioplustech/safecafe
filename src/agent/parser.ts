@@ -2,37 +2,37 @@ import { type Address, isAddress } from "viem"
 import type { ValidatorInfo } from "../protocol"
 import type { AgentAmount, AgentParseResult, AgentValidatorRef } from "./types"
 
-const unsupportedPattern =
-  /\b(bridge|swap|borrow|lend|leverage|short|long|airdrop|delegate|session key|automatic|automatically|forever|recurring|scheduled|schedule|daily|weekly|monthly|yearly|tomorrow|tonight|later|next week|next month|every day|every week|every month|every year|every monday|every tuesday|every wednesday|every thursday|every friday|every saturday|every sunday|at \d{1,2}(?::\d{2})?\s*(am|pm)?|in \d+\s*(minute|minutes|hour|hours|day|days|week|weeks|month|months)|sign for me|sign .* for me|on my behalf|submit for me|submit .* for me|send .* transaction .* for me|execute .* for me)\b|自动|每天|每日|每周|每月|每年|定期|周期|明天|今晚|稍后|下周|下个月|分钟后|小时后|天后|周后|月后|代签|帮我签|替我签|帮我提交|替我提交|代我提交|持续执行/i
-
 export function parseAgentInstruction(input: string, validators: ValidatorInfo[]): AgentParseResult {
   const original = input.trim()
   const text = original.toLowerCase().replace(/\s+/g, " ")
   if (!text) {
     return { status: "needs-clarification", question: "What staking action should the Agent draft?", risks: [] }
   }
-  if (unsupportedPattern.test(text)) {
+  const unsafeExecutionRisk = parseUnsafeExecutionRisk(text)
+  if (unsafeExecutionRisk) {
     return {
       status: "blocked",
-      risks: [
-        {
-          severity: "blocked",
-          code: "unsupported-operation",
-          message: "This instruction asks for an unsupported operation.",
-        },
-      ],
+      risks: [unsafeExecutionRisk],
     }
   }
   if (/claim\s+(a\s+)?withdrawal|claim\s+withdrawals|领取提款|提取提款/.test(text)) {
     return { status: "ok", intent: { kind: "claim-withdrawal" }, risks: [] }
   }
-  if (/claim\s+rewards?\s+and\s+restake|复投奖励|领取奖励.*复投/.test(text)) {
+  if (/claim\s+rewards?\s+and\s+restake|\brestake\b|复投奖励|领取奖励.*复投|复投/.test(text)) {
+    const validator = parseValidatorRef(text, validators, "to") ?? parseValidatorRef(text, validators, "validator")
+    if (!validator) {
+      return {
+        status: "needs-clarification",
+        question: "Which validator should receive restaked rewards?",
+        risks: [],
+      }
+    }
     return {
       status: "ok",
       intent: {
         kind: "restake-rewards",
         amount: { type: "all-claimable-rewards" },
-        validator: parseValidatorRef(text, validators, "to") ?? { type: "best-active" },
+        validator,
       },
       risks: [],
     }
@@ -88,6 +88,30 @@ export function parseAgentInstruction(input: string, validators: ValidatorInfo[]
     question: "I can draft stake, unstake, claim, restake, and rebalance plans. Which one do you want?",
     risks: [],
   }
+}
+
+function parseUnsafeExecutionRisk(text: string) {
+  if (
+    /\b(automatically|auto|scheduled?|recurring|daily|weekly|monthly|tomorrow)\b/.test(text) ||
+    /\bevery\s+(day|week|month|year|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/.test(text) ||
+    /\bin\s+\d+\s+(minutes?|hours?|days?|weeks?|months?)\b/.test(text) ||
+    /\bat\s+\d{1,2}(?::\d{2})?\s*(am|pm)?\b/.test(text) ||
+    /自动|定时|周期|每天|每日|每周|每月|明天|\d+\s*分钟后|\d+\s*小时后|\d+\s*天后/.test(text)
+  ) {
+    return {
+      severity: "blocked" as const,
+      code: "scheduled-execution-not-supported",
+      message: "The Agent can draft SAFE staking actions, but it cannot schedule or automatically execute them.",
+    }
+  }
+  if (/\b(submit|sign|approve|confirm)\s+for\s+me\b|帮我(提交|签名|授权|确认)|替我(提交|签名|授权|确认)/.test(text)) {
+    return {
+      severity: "blocked" as const,
+      code: "wallet-confirmation-required",
+      message: "The Agent cannot sign, approve, confirm, or submit wallet actions for you.",
+    }
+  }
+  return null
 }
 
 function parseAmount(text: string, percentBase: "wallet" | "validator"): AgentAmount | null {

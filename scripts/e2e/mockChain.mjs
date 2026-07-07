@@ -66,6 +66,9 @@ export function createMockChain(seed = {}) {
     pendingWithdrawals: [...(seed.pendingWithdrawals ?? [])],
     rewardCumulativeAmount: seed.rewardCumulativeAmount ?? 8n * eth,
     safeBalance: seed.safeBalance ?? 100n * eth,
+    safes: seed.safes ?? ["0x1111111111111111111111111111111111111111"],
+    agentRequests: 0,
+    rpcCalls: [],
     stakingAllowance: seed.stakingAllowance ?? 0n,
     txIndex: 0n,
     validators: mockValidators.map((validator) => ({
@@ -129,6 +132,14 @@ export function createMockChain(seed = {}) {
       status: 200,
       contentType: "application/json",
       body: stringifyBigints(toAccountLivePayload(account)),
+    })
+  }
+
+  async function fulfillSafes(route) {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ safes: state.safes }),
     })
   }
 
@@ -201,11 +212,74 @@ export function createMockChain(seed = {}) {
     await route.fulfill({ status: 200, contentType: "application/json", body: stringifyBigints(response) })
   }
 
+  async function fulfillAgent(route) {
+    state.agentRequests += 1
+    const request = route.request()
+    let body = {}
+    try {
+      body = request.postDataJSON() ?? {}
+    } catch {
+      body = {}
+    }
+    const wantsStream = request.headers().accept?.includes("text/event-stream") === true || body?.stream === true
+    const thinking = "Mock model reasoning for this staking response."
+    const content = "Mock Agent stream complete. Every transaction still needs wallet confirmation."
+    if (!wantsStream) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ content, thinking, source: "fallback" }),
+      })
+      return
+    }
+    await route.fulfill({
+      status: 200,
+      headers: {
+        "cache-control": "no-store",
+        "content-type": "text/event-stream; charset=utf-8",
+        "x-accel-buffering": "no",
+      },
+      body:
+        `data: ${JSON.stringify({ type: "thinking", content: thinking })}\n\n` +
+        `data: ${JSON.stringify({ type: "delta", content: "Mock Agent stream " })}\n\n` +
+        `data: ${JSON.stringify({ type: "delta", content: "complete." })}\n\n` +
+        `data: ${JSON.stringify({ type: "final", content, source: "fallback" })}\n\n` +
+        "data: [DONE]\n\n",
+    })
+  }
+
   function handleRpcItem(request) {
     const id = request?.id ?? null
     try {
+      state.rpcCalls.push({ method: request?.method, params: request?.params })
       if (request?.method === "eth_chainId") return ok(id, "0x1")
       if (request?.method === "eth_blockNumber") return ok(id, numberToHex(state.blockNumber))
+      if (request?.method === "eth_getTransactionByHash") {
+        const hash = request.params?.[0]
+        const receipt = receipts.get(hash)
+        return ok(
+          id,
+          receipt
+            ? {
+                blockHash: receipt.blockHash,
+                blockNumber: receipt.blockNumber,
+                from: receipt.from,
+                gas: receipt.gasUsed,
+                gasPrice: receipt.effectiveGasPrice,
+                hash,
+                input: "0x",
+                nonce: "0x0",
+                r: `0x${"00".repeat(32)}`,
+                s: `0x${"00".repeat(32)}`,
+                to: receipt.to,
+                transactionIndex: receipt.transactionIndex,
+                type: receipt.type,
+                v: "0x0",
+                value: "0x0",
+              }
+            : null,
+        )
+      }
       if (request?.method === "eth_getTransactionReceipt") {
         const hash = request.params?.[0]
         return ok(id, receipts.get(hash) ?? null)
@@ -451,10 +525,12 @@ export function createMockChain(seed = {}) {
 
   return {
     applyTransaction,
+    fulfillAgent,
     fulfillAccountLive,
     fulfillAuthChallenge,
     fulfillAuthVerify,
     fulfillRewardProof,
+    fulfillSafes,
     fulfillRpc,
     fulfillValidators,
     installWallet,

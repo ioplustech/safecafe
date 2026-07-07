@@ -8,7 +8,7 @@ export type WalletIdentity = {
 
 export function createWalletIdentity(signer: Address | null, subject?: Address | null): WalletIdentity {
   const normalizedSigner = normalizeAddress(signer)
-  const normalizedSubject = normalizeAddress(subject) ?? normalizedSigner
+  const normalizedSubject = subject === undefined ? normalizedSigner : normalizeAddress(subject)
   return {
     signer: normalizedSigner,
     subject: normalizedSubject,

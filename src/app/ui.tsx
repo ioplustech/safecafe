@@ -1,5 +1,5 @@
 import { Check, CheckCircle2, ChevronDown, Clock3, ExternalLink } from "lucide-react"
-import { type ReactNode, useEffect, useRef, useState } from "react"
+import { type ReactNode, useEffect, useId, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { formatSafe, formatUsdFromSafe } from "../protocol"
 import type { MessageBundle } from "./i18n"
@@ -206,13 +206,30 @@ export function Tooltip({
   label: string
   children: ReactNode
 }) {
+  const id = useId()
   const [open, setOpen] = useState(false)
+  const [rendered, setRendered] = useState(false)
   const [position, setPosition] = useState<{ left: number; placement: "bottom" | "top"; top: number } | null>(null)
+  const closeTimerRef = useRef<number | null>(null)
+  const frameRef = useRef<number | null>(null)
   const rootRef = useRef<HTMLSpanElement>(null)
 
+  useEffect(
+    () => () => {
+      if (closeTimerRef.current !== null) window.clearTimeout(closeTimerRef.current)
+      if (frameRef.current !== null) window.cancelAnimationFrame(frameRef.current)
+    },
+    [],
+  )
+
   function show() {
-    const rect = rootRef.current?.getBoundingClientRect()
+    const rect = readTooltipAnchorRect(rootRef.current)
     if (!rect) return
+    if (closeTimerRef.current !== null) {
+      window.clearTimeout(closeTimerRef.current)
+      closeTimerRef.current = null
+    }
+    if (frameRef.current !== null) window.cancelAnimationFrame(frameRef.current)
     const placement = rect.top < 86 ? "bottom" : "top"
     const estimatedWidth = Math.min(280, window.innerWidth - 24)
     const minLeft = 12 + estimatedWidth / 2
@@ -223,24 +240,50 @@ export function Tooltip({
       placement,
       top: placement === "top" ? rect.top - 10 : rect.bottom + 10,
     })
-    setOpen(true)
+    setRendered(true)
+    frameRef.current = window.requestAnimationFrame(() => setOpen(true))
+  }
+
+  function hide() {
+    if (frameRef.current !== null) {
+      window.cancelAnimationFrame(frameRef.current)
+      frameRef.current = null
+    }
+    setOpen(false)
+    if (closeTimerRef.current !== null) window.clearTimeout(closeTimerRef.current)
+    closeTimerRef.current = window.setTimeout(() => {
+      setRendered(false)
+      closeTimerRef.current = null
+    }, 170)
   }
 
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: this wrapper only positions hover help around children that may already be interactive.
     <span
       className={`tooltip-wrap ${className}`}
+      aria-describedby={open ? id : undefined}
+      onBlurCapture={(event) => {
+        const nextTarget = event.relatedTarget
+        if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) return
+        hide()
+      }}
+      onFocusCapture={show}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") hide()
+      }}
       role="presentation"
       onMouseEnter={show}
-      onMouseLeave={() => setOpen(false)}
+      onMouseLeave={hide}
       ref={rootRef}
     >
       {children}
-      {open &&
+      {rendered &&
         position &&
         createPortal(
           <span
+            id={id}
             className={`tooltip-bubble floating-tooltip ${position.placement}`}
+            data-state={open ? "open" : "closed"}
             role="tooltip"
             style={{ left: position.left, top: position.top }}
           >
@@ -250,6 +293,14 @@ export function Tooltip({
         )}
     </span>
   )
+}
+
+function readTooltipAnchorRect(root: HTMLElement | null) {
+  if (!root) return null
+  const rect = root.getBoundingClientRect()
+  if (rect.width > 0 && rect.height > 0) return rect
+  const child = Array.from(root.children).find((item): item is HTMLElement => item instanceof HTMLElement)
+  return child?.getBoundingClientRect() ?? rect
 }
 
 export function ChecklistRow({ label, value, ok }: { label: string; value: string; ok: boolean }) {

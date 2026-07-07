@@ -6,6 +6,7 @@ import {
   Home,
   Languages,
   Menu,
+  RefreshCw,
   Settings,
   Users,
   Wallet,
@@ -17,12 +18,14 @@ import { type Address, createWalletClient, custom } from "viem"
 import {
   type AccountSnapshot,
   CHAIN_ID,
+  combineTxPlans,
   compactAddress,
   createSafenetPublicClient,
   EXPLORER_BASE_URL,
   fetchRewardProof,
   fetchValidators,
   findValidator,
+  formatSafeInput,
   isTxPlanForAccount,
   planClaimRewards,
   planClaimWithdrawal,
@@ -38,13 +41,7 @@ import { createPathMap, navFromPath as resolveNavFromPath } from "../shared"
 import { SAFECAFE_VERSION } from "../shared/version"
 import { AgentLauncher } from "./AgentLauncher"
 import { DetailModal } from "./DetailModal"
-import {
-  priceStatusLabel,
-  readableSimulationError,
-  safeParsedAmount,
-  stringifyBigInts,
-  translateTxLabel,
-} from "./formatters"
+import { readableSimulationError, safeParsedAmount, stringifyBigInts, translateTxLabel } from "./formatters"
 import { detectLocale, getMessages, isLocale, type Locale, localeOptions } from "./i18n"
 import { readCachedSafePrice, writeCachedSafePrice } from "./priceCache"
 import { clearRpcSession, ensureRpcSession, readRpcSession } from "./rpcAuth"
@@ -67,6 +64,7 @@ const navPaths = createPathMap(navItems)
 type ValidatorSort = "stake" | "participation" | "commission" | "name" | "yourStake"
 type WalletStatus = "idle" | "restoring" | "connecting" | "connected"
 type DashboardAction = Extract<Action, "stake" | "unstake" | "claim-rewards">
+type SubmittingAction = Action | "claim-rewards-and-stake" | null
 type SimulateTxPlanOptions = { requireAuth?: boolean }
 type SubmitPlanOptions = {
   alreadySubmitting?: boolean
@@ -81,6 +79,10 @@ type LiveReadResult = {
   }
   snapshot: AccountSnapshot
   validatorsWithPositions: ValidatorInfo[]
+}
+type RefreshedLiveAccountData = LiveReadResult & {
+  rewardProof: Awaited<ReturnType<typeof fetchRewardProof>> | null
+  rewards: bigint
 }
 
 function navFromPath(pathname: string): NavItem {
@@ -142,6 +144,7 @@ export function App() {
   const [validatorQuery, setValidatorQuery] = useState("")
   const [validatorSort, setValidatorSort] = useState<ValidatorSort>("stake")
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [submittingAction, setSubmittingAction] = useState<SubmittingAction>(null)
   const [liveSnapshot, setLiveSnapshot] = useState<AccountSnapshot | null>(null)
   const [liveRewards, setLiveRewards] = useState<bigint | null>(null)
   const [liveBlock, setLiveBlock] = useState<bigint | null>(null)
@@ -158,6 +161,9 @@ export function App() {
   const [txProgress, setTxProgress] = useState("")
   const [validatorStakeError, setValidatorStakeError] = useState("")
   const [safePrice, setSafePrice] = useState<SafePriceState>(() => readCachedSafePrice())
+  const [discoveredSafes, setDiscoveredSafes] = useState<Address[]>([])
+  const [safeDiscoveryStatus, setSafeDiscoveryStatus] = useState<"failed" | "idle" | "loading" | "ready">("idle")
+  const [safeDiscoveryError, setSafeDiscoveryError] = useState("")
 
   const t = getMessages(locale)
   const activeLocale = localeOptions.find((option) => option.code === locale) ?? localeOptions[0]
@@ -177,7 +183,7 @@ export function App() {
   const languageMenuRef = useRef<HTMLDivElement | null>(null)
   const liveReadRequestId = useRef(0)
   const refreshLiveReadsRef = useRef<
-    ((target?: Address | null, options?: { forceRefresh?: boolean }) => Promise<void>) | null
+    ((target?: Address | null, options?: { forceRefresh?: boolean }) => Promise<RefreshedLiveAccountData | null>) | null
   >(null)
   const selectedValidator = useMemo(
     () => findValidator(validators, validator) ?? validators[0] ?? defaultValidator,
@@ -369,6 +375,7 @@ export function App() {
     setLiveError("")
     setTxPlan(null)
     setTxProgress("")
+    setValidators((current) => current.map(clearValidatorPosition))
   }, [])
 
   const setWalletIdentityState = useCallback((identity: ReturnType<typeof createWalletIdentity>) => {
@@ -376,14 +383,32 @@ export function App() {
     setStakingAccount(identity.subject)
   }, [])
 
+  const selectStakingSubject = useCallback(
+    (identity: ReturnType<typeof createWalletIdentity>, options: { refresh?: boolean } = {}) => {
+      setWalletIdentityState(identity)
+      setTxPlan(null)
+      setLiveSnapshot(null)
+      setRewardProof(null)
+      setLiveRewards(null)
+      const session = identity.signer ? readRpcSession(identity) : null
+      setRpcAuthToken(session?.token ?? null)
+      if (options.refresh && identity.subject)
+        void refreshLiveReadsRef.current?.(identity.subject, { forceRefresh: true })
+    },
+    [setWalletIdentityState],
+  )
+
   useEffect(() => {
     setIsLoadingValidators(true)
     setValidatorLoadError("")
     fetchValidators(undefined, { fallback: false })
       .then((items) => {
         setValidatorStakeError("")
-        setValidators(items)
-        setValidator((current) => findValidator(items, current)?.address ?? items[0]?.address ?? current)
+        setValidators((current) => {
+          const merged = mergeValidatorMetadata(items, current)
+          setValidator((selected) => findValidator(merged, selected)?.address ?? merged[0]?.address ?? selected)
+          return merged
+        })
       })
       .catch((error) => {
         const message = error instanceof Error ? error.message : t.validatorInfoFailed
@@ -399,7 +424,7 @@ export function App() {
     async (target = subjectAccount, options: { forceRefresh?: boolean } = {}) => {
       if (!target) {
         toast(t.connectToLoad, "warning")
-        return
+        return null
       }
       const requestId = liveReadRequestId.current + 1
       liveReadRequestId.current = requestId
@@ -407,13 +432,15 @@ export function App() {
       setLiveError("")
       try {
         const { health, snapshot, validatorsWithPositions } = await readLiveData(target, options)
-        if (liveReadRequestId.current !== requestId) return
+        if (liveReadRequestId.current !== requestId) return null
         setLiveSnapshot(snapshot)
         setLiveBlock(health.blockNumber)
         setLiveMerkleRoot(health.merkleRoot)
         setValidatorLoadError("")
         setValidators(validatorsWithPositions)
 
+        let nextRewardProof: Awaited<ReturnType<typeof fetchRewardProof>> | null = null
+        let nextRewards = 0n
         try {
           const proof = mockRewardProofEnabled
             ? {
@@ -422,22 +449,31 @@ export function App() {
                 proof: [],
               }
             : await fetchRewardProof(target)
-          if (liveReadRequestId.current !== requestId) return
+          if (liveReadRequestId.current !== requestId) return null
+          nextRewardProof = proof
           setRewardProof(proof)
           const cumulativeAmount = proof ? BigInt(proof.cumulativeAmount) : 0n
-          setLiveRewards(
-            cumulativeAmount > snapshot.cumulativeClaimed ? cumulativeAmount - snapshot.cumulativeClaimed : 0n,
-          )
+          nextRewards =
+            cumulativeAmount > snapshot.cumulativeClaimed ? cumulativeAmount - snapshot.cumulativeClaimed : 0n
+          setLiveRewards(nextRewards)
         } catch {
-          if (liveReadRequestId.current !== requestId) return
+          if (liveReadRequestId.current !== requestId) return null
           setRewardProof(null)
           setLiveRewards(0n)
         }
+        return {
+          health,
+          rewardProof: nextRewardProof,
+          rewards: nextRewards,
+          snapshot,
+          validatorsWithPositions,
+        }
       } catch (error) {
-        if (liveReadRequestId.current !== requestId) return
+        if (liveReadRequestId.current !== requestId) return null
         const message = error instanceof Error ? error.message : t.liveDataFailed
         setLiveError(message)
         toast(message, "warning")
+        return null
       } finally {
         if (liveReadRequestId.current === requestId) setIsReadingLive(false)
       }
@@ -448,6 +484,30 @@ export function App() {
   useEffect(() => {
     refreshLiveReadsRef.current = refreshLiveReads
   }, [refreshLiveReads])
+
+  useEffect(() => {
+    if (!account) {
+      setDiscoveredSafes([])
+      setSafeDiscoveryStatus("idle")
+      setSafeDiscoveryError("")
+      return
+    }
+    const controller = new AbortController()
+    setSafeDiscoveryStatus("loading")
+    setSafeDiscoveryError("")
+    fetchOwnedSafes(account, controller.signal)
+      .then((safes) => {
+        setDiscoveredSafes(safes)
+        setSafeDiscoveryStatus("ready")
+      })
+      .catch((error) => {
+        if (controller.signal.aborted) return
+        setDiscoveredSafes([])
+        setSafeDiscoveryStatus("failed")
+        setSafeDiscoveryError(error instanceof Error ? error.message : t.safeDiscoveryFailed)
+      })
+    return () => controller.abort()
+  }, [account, t.safeDiscoveryFailed])
 
   useEffect(() => {
     if (!window.ethereum) return
@@ -471,9 +531,7 @@ export function App() {
             return
           }
           const identity = createWalletIdentity(first)
-          setWalletIdentityState(identity)
-          const session = readRpcSession(identity)
-          setRpcAuthToken(session?.token ?? null)
+          selectStakingSubject(identity)
           setWalletStatus("connected")
           await refreshLiveReadsRef.current?.(identity.subject)
         })
@@ -486,9 +544,7 @@ export function App() {
       const [first] = accounts as Address[]
       const identity = createWalletIdentity(first ?? null)
       resetLiveAccountState()
-      setWalletIdentityState(identity)
-      const session = first ? readRpcSession(identity) : null
-      setRpcAuthToken(session?.token ?? null)
+      selectStakingSubject(identity)
       setWalletStatus(first ? "connected" : "idle")
       if (first) {
         window.localStorage.removeItem(walletDisconnectKey)
@@ -506,9 +562,7 @@ export function App() {
           if (cancelled) return
           const [first] = accounts as Address[]
           const identity = createWalletIdentity(first ?? null)
-          const session = first ? readRpcSession(identity) : null
-          setWalletIdentityState(identity)
-          setRpcAuthToken(session?.token ?? null)
+          selectStakingSubject(identity)
           setWalletStatus(first ? "connected" : "idle")
           if (first) void refreshLiveReadsRef.current?.(identity.subject)
         })
@@ -521,7 +575,7 @@ export function App() {
       window.ethereum?.removeListener?.("accountsChanged", handleAccountsChanged)
       window.ethereum?.removeListener?.("chainChanged", handleChainChanged)
     }
-  }, [resetLiveAccountState, setWalletIdentityState])
+  }, [resetLiveAccountState, selectStakingSubject])
 
   useEffect(() => {
     if (!isLanguageMenuOpen) return
@@ -573,9 +627,7 @@ export function App() {
       const identity = createWalletIdentity(accounts[0] ?? null)
       await ensureMainnet()
       if (!identity.signer || !identity.subject) throw new Error(t.noAccount)
-      setWalletIdentityState(identity)
-      const session = readRpcSession(identity)
-      setRpcAuthToken(session?.token ?? null)
+      selectStakingSubject(identity)
       setWalletStatus("connected")
       await refreshLiveReads(identity.subject)
     } catch (error) {
@@ -618,6 +670,10 @@ export function App() {
     await refreshLiveReads(subjectAccount)
   }
 
+  async function forceRefreshLiveReads() {
+    await refreshLiveReads(subjectAccount, { forceRefresh: true })
+  }
+
   async function authenticateAgent() {
     if (!window.ethereum) {
       toast(t.noWallet, "warning")
@@ -644,6 +700,7 @@ export function App() {
   }
 
   async function ensureRpcAuthTokenForCurrentWallet() {
+    if (rpcAuthToken) return rpcAuthToken
     if (!window.ethereum) throw new Error(t.noWallet)
     if (!account || !subjectAccount) throw new Error(t.agentAuthRequired)
     const identity = createWalletIdentity(account, subjectAccount)
@@ -685,6 +742,46 @@ export function App() {
     return null
   }
 
+  function createClaimRewardsAndStakePlan(
+    targetValidatorAddress: Address,
+    data?: RefreshedLiveAccountData | null,
+  ): TxPlan {
+    const snapshot = data?.snapshot ?? liveSnapshot
+    const proof = data?.rewardProof ?? rewardProof
+    const rewards = data?.rewards ?? liveRewards ?? 0n
+    const merkleRoot = data?.health.merkleRoot ?? liveMerkleRoot
+    if (!subjectAccount || !snapshot) throw new Error(t.connectToPlan)
+    if (!proof?.proof) throw new Error(t.noProof)
+    if (merkleRoot && proof.merkleRoot.toLowerCase() !== merkleRoot.toLowerCase()) {
+      throw new Error(t.merkleMismatch)
+    }
+    const rewardAmount = rewards
+    if (rewardAmount <= 0n) throw new Error(t.noProof)
+    const targetValidator = data?.validatorsWithPositions
+      ? findValidator(data.validatorsWithPositions, targetValidatorAddress)
+      : findValidator(validators, targetValidatorAddress)
+    if (!targetValidator) throw new Error(t.inactiveValidator)
+    if (targetValidator.status !== "active") throw new Error(t.inactiveValidator)
+    return combineTxPlans({
+      title: "Claim and stake rewards",
+      account: subjectAccount,
+      plans: [
+        planClaimRewards({
+          account: subjectAccount,
+          cumulativeAmount: BigInt(proof.cumulativeAmount),
+          merkleRoot: proof.merkleRoot,
+          proof: proof.proof,
+        }),
+        planStake({
+          validator: targetValidatorAddress,
+          amount: formatSafeInput(rewardAmount),
+          account: subjectAccount,
+          allowance: snapshot.stakingAllowance,
+        }),
+      ],
+    })
+  }
+
   async function executeAction(nextAction = action) {
     if (!account) {
       await connectWallet()
@@ -698,6 +795,7 @@ export function App() {
     setAction(nextAction)
     setTxPlan(null)
     setIsSubmitting(true)
+    setSubmittingAction(nextAction)
     setTxProgress(t.preparingAction)
     try {
       await ensureMainnet()
@@ -711,18 +809,52 @@ export function App() {
       setTxPlan(simulatedPlan)
       await submitPlan(simulatedPlan, { alreadySubmitting: true, requireAuth: true, skipValidation: true })
     } catch (error) {
-      toast(error instanceof Error ? error.message : t.transactionFailed, "warning")
+      toast(readableSimulationError(error, t.transactionFailed), "warning")
     } finally {
       setIsSubmitting(false)
+      setSubmittingAction(null)
+      setTxProgress("")
+    }
+  }
+
+  async function executeClaimRewardsAndStake(targetValidatorAddress: Address) {
+    if (!account) {
+      await connectWallet()
+      return
+    }
+    if (!window.ethereum) {
+      toast(t.noWallet, "warning")
+      return
+    }
+    if (isSubmitting) return
+    setAction("claim-rewards")
+    setTxPlan(null)
+    setIsSubmitting(true)
+    setSubmittingAction("claim-rewards-and-stake")
+    setTxProgress(t.preparingAction)
+    try {
+      await ensureMainnet()
+      const refreshed = await refreshLiveReads(subjectAccount, { forceRefresh: true })
+      const nextPlan = createClaimRewardsAndStakePlan(targetValidatorAddress, refreshed)
+      const simulatedPlan = await simulateTxPlan(nextPlan, { requireAuth: true })
+      if (simulatedPlan.simulation?.status === "failed") throw new Error(simulatedPlan.simulation.message)
+      setTxPlan(simulatedPlan)
+      await submitPlan(simulatedPlan, { alreadySubmitting: true, requireAuth: true, skipValidation: true })
+    } catch (error) {
+      toast(readableSimulationError(error, t.transactionFailed), "warning")
+    } finally {
+      setIsSubmitting(false)
+      setSubmittingAction(null)
       setTxProgress("")
     }
   }
 
   async function simulateTxPlan(plan: TxPlan, options: SimulateTxPlanOptions = {}): Promise<TxPlan> {
     if (!subjectAccount) return plan
-    let authToken: string | null = options.requireAuth ? rpcAuthToken : null
+    const requireAuth = Boolean(options.requireAuth)
+    let authToken: string | null = requireAuth ? rpcAuthToken : null
     try {
-      if (options.requireAuth) authToken = await ensureRpcAuthTokenForCurrentWallet()
+      if (requireAuth && !authToken) authToken = await ensureRpcAuthTokenForCurrentWallet()
     } catch (error) {
       return {
         ...plan,
@@ -734,15 +866,19 @@ export function App() {
       }
     }
     const client = createSafenetPublicClient({ authToken, rpcUrl: import.meta.env.VITE_RPC_URL })
-    const txsToSimulate = usesApprovalBeforeStake(plan) ? plan.txs.slice(0, 1) : plan.txs
+    const txsToSimulate = txsSafeToSimulate(plan)
     try {
       for (const tx of txsToSimulate) {
-        await client.call({
-          account: subjectAccount,
-          to: tx.to,
-          data: tx.data,
-          value: tx.value,
-        })
+        try {
+          await client.call({
+            account: subjectAccount,
+            to: tx.to,
+            data: tx.data,
+            value: tx.value,
+          })
+        } catch (error) {
+          throw new Error(`${translateTxLabel(tx.label, t)}: ${readableSimulationError(error, t.simulationFailed)}`)
+        }
       }
       return {
         ...plan,
@@ -764,12 +900,10 @@ export function App() {
     }
   }
 
-  function usesApprovalBeforeStake(plan: TxPlan) {
-    return (
-      plan.txs.length > 1 &&
-      plan.txs[0]?.label === "Approve SAFE for staking contract" &&
-      plan.txs.some((tx) => tx.label === "Stake SAFE to validator")
-    )
+  function txsSafeToSimulate(plan: TxPlan) {
+    const stakeIndex = plan.txs.findIndex((tx) => tx.label === "Stake SAFE to validator")
+    if (stakeIndex <= 0) return plan.txs
+    return plan.txs.slice(0, stakeIndex)
   }
 
   async function submitPlan(planOverride?: TxPlan, options: SubmitPlanOptions = {}) {
@@ -783,7 +917,10 @@ export function App() {
       await connectWallet()
       return
     }
-    if (!options.alreadySubmitting) setIsSubmitting(true)
+    if (!options.alreadySubmitting) {
+      setIsSubmitting(true)
+      setSubmittingAction(planToSubmit.action)
+    }
     setTxProgress("")
     try {
       await ensureMainnet()
@@ -803,7 +940,8 @@ export function App() {
         chain: ethereumMainnet,
         transport: custom(window.ethereum),
       })
-      const authToken = options.requireAuth ? await ensureRpcAuthTokenForCurrentWallet() : null
+      const requireAuth = Boolean(options.requireAuth)
+      const authToken = requireAuth ? (rpcAuthToken ?? (await ensureRpcAuthTokenForCurrentWallet())) : null
       const publicClient = createSafenetPublicClient({ authToken, rpcUrl: import.meta.env.VITE_RPC_URL })
       for (const tx of planToSubmit.txs) {
         setTxProgress(`${t.simulationStatus}: ${translateTxLabel(tx.label, t)}`)
@@ -829,9 +967,10 @@ export function App() {
       }
       await refreshLiveReads(subjectAccount, { forceRefresh: true })
     } catch (error) {
-      toast(error instanceof Error ? error.message : t.transactionFailed, "warning")
+      toast(readableSimulationError(error, t.transactionFailed), "warning")
     } finally {
       if (!options.alreadySubmitting) setIsSubmitting(false)
+      if (!options.alreadySubmitting) setSubmittingAction(null)
       setTxProgress("")
     }
   }
@@ -855,27 +994,9 @@ export function App() {
     return null
   }
 
-  function validateActionSelection(targetAction: Action): string | null {
-    if (targetAction === "stake" || targetAction === "unstake") {
-      if (!subjectAccount || !liveSnapshot) return null
-      if (chainId !== null && chainId !== CHAIN_ID) return t.wrongNetwork
-    }
-    if (targetAction === "stake") {
-      if (!findPreferredValidator(targetAction)) return t.inactiveValidator
-    }
-    if (targetAction === "unstake") {
-      if (!findPreferredValidator(targetAction)) return t.insufficientValidatorStake
-    }
-    return null
-  }
-
   function selectAction(nextAction: Action) {
-    const validation = validateActionSelection(nextAction)
-    if (validation) {
-      toast(validation, "warning")
-      return
-    }
-    const preferredValidator = findPreferredValidator(nextAction)
+    const preferredValidator =
+      nextAction === "claim-rewards" ? findPreferredValidator("stake") : findPreferredValidator(nextAction)
     if (preferredValidator && preferredValidator.address !== validator) {
       updateValidator(preferredValidator.address)
     }
@@ -1107,15 +1228,31 @@ export function App() {
                     : t.connectToBegin}
               </p>
             </div>
-            <div className="button-row">
-              <div className={`price-chip ${safePrice.stale ? "stale" : ""}`}>
-                <strong>{safePrice.usd === null ? t.priceUnavailable : `$${safePrice.usd.toFixed(3)}`}</strong>
-                <small>{priceStatusLabel(safePrice, t)}</small>
-              </div>
-              <button type="button" className="soft-button" disabled={isReadingLive} onClick={refreshOrConnect}>
-                <Database size={16} />
-                {isReadingLive || walletBusy ? t.reading : account ? t.refreshLive : t.connectWallet}
-              </button>
+            <div className="summary-refresh-control">
+              {account ? (
+                <button
+                  type="button"
+                  className="live-refresh-button"
+                  disabled={isReadingLive || walletBusy}
+                  onClick={forceRefreshLiveReads}
+                  aria-label={t.forceRefreshLive}
+                  title={t.forceRefreshLive}
+                >
+                  <RefreshCw size={16} className={isReadingLive ? "spin-icon" : ""} />
+                  <span>
+                    <strong>{isReadingLive ? t.reading : t.refreshLive}</strong>
+                    <small>{t.forceRefreshLiveHint}</small>
+                  </span>
+                </button>
+              ) : (
+                <button type="button" className="live-refresh-button" disabled={walletBusy} onClick={refreshOrConnect}>
+                  <Wallet size={16} />
+                  <span>
+                    <strong>{walletBusy ? t.reading : t.connectWallet}</strong>
+                    <small>{t.connectWalletHint}</small>
+                  </span>
+                </button>
+              )}
             </div>
           </div>
           {liveError && <p className="warning">{liveError}</p>}
@@ -1163,9 +1300,11 @@ export function App() {
             amount={amount}
             accountReady={hasLiveAccountData}
             connectedAccount={connectedAccount}
+            executeClaimRewardsAndStake={executeClaimRewardsAndStake}
             executeAction={executeAction}
             isLoadingValidators={isLoadingValidators}
             isSubmitting={isSubmitting}
+            submittingAction={submittingAction}
             modal={modal}
             onConnect={refreshOrConnect}
             openExplorer={openExplorer}
@@ -1230,6 +1369,7 @@ export function App() {
             t={t}
             executeAction={executeAction}
             isSubmitting={isSubmitting}
+            submittingAction={submittingAction}
             selectAction={selectAction}
             summary={displaySummary}
             dataStatus={dataStatus}
@@ -1241,6 +1381,7 @@ export function App() {
             t={t}
             executeAction={executeAction}
             isSubmitting={isSubmitting}
+            submittingAction={submittingAction}
             selectAction={selectAction}
             summary={displaySummary}
             txProgress={txProgress}
@@ -1262,9 +1403,11 @@ export function App() {
       {modal && (
         <DetailModal
           account={account}
-          signerAccount={account}
           subjectAccount={subjectAccount}
           subjectKind={walletIdentity.subjectKind}
+          discoveredSafes={discoveredSafes}
+          safeDiscoveryError={safeDiscoveryError}
+          safeDiscoveryStatus={safeDiscoveryStatus}
           copyText={copyText}
           dataStatus={dataStatus}
           disconnectWallet={disconnectWallet}
@@ -1273,31 +1416,17 @@ export function App() {
           openExplorer={openExplorer}
           onRefreshSubject={(subject) => {
             const nextSubject = normalizeAddress(subject)
-            if (!account || !nextSubject) {
+            if (!account || !nextSubject || nextSubject.toLowerCase() === account.toLowerCase()) {
               toast(t.invalidSafeAccount, "warning")
               return
             }
             const identity = createWalletIdentity(account, nextSubject)
-            setStakingAccount(identity.subject)
-            setTxPlan(null)
-            setLiveSnapshot(null)
-            setRewardProof(null)
-            setLiveRewards(null)
-            const session = readRpcSession(identity)
-            setRpcAuthToken(session?.token ?? null)
-            void refreshLiveReads(identity.subject, { forceRefresh: true })
+            selectStakingSubject(identity, { refresh: true })
           }}
           onUseSignerAsSubject={() => {
             if (!account) return
             const identity = createWalletIdentity(account)
-            setStakingAccount(identity.subject)
-            setTxPlan(null)
-            setLiveSnapshot(null)
-            setRewardProof(null)
-            setLiveRewards(null)
-            const session = readRpcSession(identity)
-            setRpcAuthToken(session?.token ?? null)
-            void refreshLiveReads(identity.subject, { forceRefresh: true })
+            selectStakingSubject(identity, { refresh: true })
           }}
           t={t}
         />
@@ -1328,10 +1457,6 @@ export function App() {
         onExportPlan={exportSafePayload}
         onOpen={() => setModal(null)}
         onSubmitPlan={(plan) => submitPlan(plan, { requireAuth: true })}
-        onApplyPlan={(plan) => {
-          setTxPlan(plan)
-          toast(t.planReady, "success")
-        }}
       />
     </div>
   )
@@ -1358,6 +1483,15 @@ async function readLiveData(account: Address, options: { forceRefresh?: boolean 
   } finally {
     liveReadCache.delete(cacheKey)
   }
+}
+
+async function fetchOwnedSafes(owner: Address, signal?: AbortSignal): Promise<Address[]> {
+  const params = new URLSearchParams({ owner })
+  const response = await fetch(`/api/safes?${params.toString()}`, { cache: "no-store", signal })
+  if (!response.ok) throw new Error(`Safe discovery failed: ${response.status}`)
+  const data = (await response.json()) as { safes?: unknown }
+  if (!Array.isArray(data.safes)) return []
+  return data.safes.map((safe) => normalizeAddress(safe)).filter((safe): safe is Address => Boolean(safe))
 }
 
 function parseLiveReadResult(value: unknown): LiveReadResult {
@@ -1414,6 +1548,28 @@ function toBigInt(value: unknown) {
   if (typeof value === "number" && Number.isSafeInteger(value)) return BigInt(value)
   if (typeof value === "string" && /^\d+$/.test(value)) return BigInt(value)
   return 0n
+}
+
+function mergeValidatorMetadata(metadata: ValidatorInfo[], current: ValidatorInfo[]): ValidatorInfo[] {
+  const positionsByAddress = new Map(current.map((validator) => [validator.address.toLowerCase(), validator]))
+  return metadata.map((validator) => {
+    const currentValidator = positionsByAddress.get(validator.address.toLowerCase())
+    return currentValidator
+      ? {
+          ...validator,
+          totalStake: currentValidator.totalStake,
+          userStake: currentValidator.userStake,
+        }
+      : validator
+  })
+}
+
+function clearValidatorPosition(validator: ValidatorInfo): ValidatorInfo {
+  return {
+    ...validator,
+    totalStake: 0n,
+    userStake: 0n,
+  }
 }
 
 function compareBigintDesc(a: bigint, b: bigint) {

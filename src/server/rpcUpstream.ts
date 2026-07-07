@@ -77,7 +77,7 @@ export async function forwardRpcRequest(
         }
         continue
       }
-      const value = (await response.json()) as { error?: { code?: unknown; message?: unknown } }
+      const value = (await response.json()) as { error?: { code?: unknown; data?: unknown; message?: unknown } }
       if (value.error && shouldRetryJsonRpcError(request, value.error)) {
         lastError = typeof value.error.message === "string" ? value.error.message : "RPC upstream returned an error."
         retryable = true
@@ -92,6 +92,24 @@ export async function forwardRpcRequest(
           })
         }
         continue
+      }
+      if (value.error && context) {
+        logServerEvent(context, "warn", "rpc.upstream.json_rpc_error", {
+          attempt: attempts,
+          attemptElapsedMs: elapsedMs(attemptStartedAt),
+          jsonRpcErrorCode: value.error.code,
+          jsonRpcErrorMessage: truncateMessage(value.error.message),
+          method: methodName(request),
+          upstream: lastUpstream,
+        })
+        value.error = {
+          ...value.error,
+          data: mergeJsonRpcErrorData(value.error.data, {
+            method: methodName(request),
+            requestId: context.requestId,
+            upstream: lastUpstream,
+          }),
+        }
       }
       if (context) {
         logServerEvent(context, "info", "rpc.upstream.success", {
@@ -140,27 +158,59 @@ export async function forwardRpcRequest(
   return { ok: false, failure }
 }
 
-function shouldRetryJsonRpcError(request: JsonRpcRequest, error: { code?: unknown; message?: unknown }) {
+function shouldRetryJsonRpcError(
+  request: JsonRpcRequest,
+  error: { code?: unknown; data?: unknown; message?: unknown },
+) {
   const message = typeof error.message === "string" ? error.message.toLowerCase() : ""
+  const dataMessage = jsonRpcDataMessage(error.data)
+  const combinedMessage = `${message} ${dataMessage}`.trim()
+  if (isContractExecutionError(combinedMessage)) return false
+
   if (
-    message.includes("cannot fulfill request") ||
-    message.includes("rate limit") ||
-    message.includes("too many requests") ||
-    message.includes("temporarily unavailable") ||
-    message.includes("timeout")
+    combinedMessage.includes("cannot fulfill request") ||
+    combinedMessage.includes("rate limit") ||
+    combinedMessage.includes("too many requests") ||
+    combinedMessage.includes("temporarily unavailable") ||
+    combinedMessage.includes("timeout") ||
+    combinedMessage.includes("header not found") ||
+    combinedMessage.includes("missing trie node") ||
+    combinedMessage.includes("service unavailable") ||
+    combinedMessage.includes("bad gateway")
   ) {
     return true
   }
 
   if (request.method === "eth_call") {
-    if (message.includes("execution reverted") || message.includes("revert") || message.includes("invalid opcode")) {
-      return false
-    }
+    return error.code === -32603 && combinedMessage.includes("internal error")
   }
 
   return false
 }
 
+function isContractExecutionError(message: string) {
+  return message.includes("execution reverted") || message.includes("revert") || message.includes("invalid opcode")
+}
+
+function jsonRpcDataMessage(data: unknown) {
+  if (typeof data === "string") return data.toLowerCase()
+  if (typeof data !== "object" || data === null) return ""
+  const message = (data as { message?: unknown }).message
+  const reason = (data as { reason?: unknown }).reason
+  return [message, reason]
+    .filter((item): item is string => typeof item === "string")
+    .join(" ")
+    .toLowerCase()
+}
+
 function methodName(request: JsonRpcRequest) {
   return typeof request.method === "string" ? request.method : "unknown"
+}
+
+function mergeJsonRpcErrorData(existing: unknown, extra: Record<string, unknown>) {
+  if (typeof existing === "object" && existing !== null && !Array.isArray(existing)) {
+    return { ...existing, ...extra }
+  }
+  if (existing === undefined || existing === null) return extra
+  return { original: existing, ...extra }
 }

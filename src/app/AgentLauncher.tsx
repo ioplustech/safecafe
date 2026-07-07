@@ -4,10 +4,12 @@ import type { TxPlan } from "../protocol"
 import { AgentChatDialog } from "./AgentChatDialog"
 import { AgentLogo } from "./AgentLogo"
 import type { MessageBundle } from "./i18n"
+import { Tooltip } from "./ui"
 
 const storageKey = "safecafe:agent-launcher-position"
 const launcherSize = 56
 const edge = 24
+const dialogExitMs = 180
 const draggable = readDraggableEnabled(import.meta.env.VITE_AGENT_LAUNCHER_DRAGGABLE)
 
 export type AgentLauncherProps = {
@@ -15,7 +17,6 @@ export type AgentLauncherProps = {
   context: AgentContext
   isSubmitting: boolean
   rpcAuthToken: string | null
-  onApplyPlan: (plan: TxPlan) => void
   onAuthenticateAgent: () => Promise<string | null>
   onConnectWallet: () => Promise<void>
   onExportPlan: (plan: TxPlan) => void
@@ -26,6 +27,7 @@ export type AgentLauncherProps = {
 
 export function AgentLauncher(props: AgentLauncherProps) {
   const [isOpen, setIsOpen] = useState(false)
+  const [shouldRenderDialog, setShouldRenderDialog] = useState(false)
   const [position, setPosition] = useState(() => readPosition())
   const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && window.innerWidth < 720)
   const wasOpenRef = useRef(false)
@@ -63,12 +65,23 @@ export function AgentLauncher(props: AgentLauncherProps) {
   useEffect(() => {
     if (isOpen) {
       wasOpenRef.current = true
+      setShouldRenderDialog(true)
       return
     }
-    if (wasOpenRef.current) buttonRef.current?.focus()
-  }, [isOpen])
+    if (!shouldRenderDialog) return
+    const timer = window.setTimeout(() => {
+      setShouldRenderDialog(false)
+      if (wasOpenRef.current) buttonRef.current?.focus()
+    }, dialogExitMs)
+    return () => window.clearTimeout(timer)
+  }, [isOpen, shouldRenderDialog])
+
+  useEffect(() => {
+    if (isOpen) props.onOpen?.()
+  }, [isOpen, props.onOpen])
 
   function onPointerDown(event: React.PointerEvent<HTMLButtonElement>) {
+    if (isOpen) return
     const rect = event.currentTarget.getBoundingClientRect()
     dragRef.current = {
       moved: false,
@@ -82,6 +95,7 @@ export function AgentLauncher(props: AgentLauncherProps) {
   }
 
   function onPointerMove(event: React.PointerEvent<HTMLButtonElement>) {
+    if (isOpen) return
     if (!draggable) return
     const drag = dragRef.current
     if (!drag || drag.pointerId !== event.pointerId) return
@@ -94,56 +108,57 @@ export function AgentLauncher(props: AgentLauncherProps) {
   function onPointerUp(event: React.PointerEvent<HTMLButtonElement>) {
     const drag = dragRef.current
     dragRef.current = null
+    if (isOpen) return
     if (!drag || drag.pointerId !== event.pointerId) return
     event.currentTarget.releasePointerCapture(event.pointerId)
     if (!drag.moved) {
-      if (!isOpen) props.onOpen?.()
-      setIsOpen((value) => !value)
+      setIsOpen(true)
     }
   }
 
   return (
     <>
-      <button
-        ref={buttonRef}
-        type="button"
-        className={`agent-launcher${draggable ? "" : " fixed"}${isOpen ? " open" : ""}`}
-        style={draggable ? { left: position.x, top: position.y, right: "auto", bottom: "auto" } : undefined}
-        aria-label={props.t.agentLauncherLabel}
-        aria-expanded={isOpen}
-        title={isMobile || !draggable ? props.t.agentLauncherLabel : props.t.agentDragHint}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" || event.key === " ") {
-            event.preventDefault()
-            props.onOpen?.()
-            setIsOpen(true)
-          }
-        }}
-      >
-        <AgentLogo size="lg" />
-        <span className="agent-launcher-dot" />
-      </button>
-      <AgentChatDialog
-        t={props.t}
-        isOpen={isOpen}
-        anchor={isMobile ? null : position}
-        context={props.context}
-        isSubmitting={props.isSubmitting}
-        rpcAuthToken={props.rpcAuthToken}
-        onAuthenticateAgent={props.onAuthenticateAgent}
-        onClose={() => setIsOpen(false)}
-        onConnectWallet={props.onConnectWallet}
-        onApplyPlan={props.onApplyPlan}
-        onExportPlan={props.onExportPlan}
-        onSimulatePlan={props.onSimulatePlan}
-        onSubmitPlan={async (plan) => {
-          setIsOpen(false)
-          await props.onSubmitPlan(plan)
-        }}
-      />
+      <Tooltip label={isMobile || !draggable ? props.t.agentLauncherLabel : props.t.agentDragHint}>
+        <button
+          ref={buttonRef}
+          type="button"
+          className={`agent-launcher${draggable ? "" : " fixed"}${isOpen ? " open" : ""}`}
+          style={draggable ? { left: position.x, top: position.y, right: "auto", bottom: "auto" } : undefined}
+          aria-label={props.t.agentLauncherLabel}
+          aria-expanded={isOpen}
+          aria-hidden={isOpen}
+          tabIndex={isOpen ? -1 : 0}
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault()
+              setIsOpen(true)
+            }
+          }}
+        >
+          <AgentLogo size="lg" />
+          <span className="agent-launcher-dot" />
+        </button>
+      </Tooltip>
+      {shouldRenderDialog && (
+        <AgentChatDialog
+          t={props.t}
+          isOpen={shouldRenderDialog}
+          isClosing={!isOpen}
+          anchor={isMobile ? null : position}
+          context={props.context}
+          isSubmitting={props.isSubmitting}
+          rpcAuthToken={props.rpcAuthToken}
+          onAuthenticateAgent={props.onAuthenticateAgent}
+          onClose={() => setIsOpen(false)}
+          onConnectWallet={props.onConnectWallet}
+          onExportPlan={props.onExportPlan}
+          onSimulatePlan={props.onSimulatePlan}
+          onSubmitPlan={props.onSubmitPlan}
+        />
+      )}
     </>
   )
 }

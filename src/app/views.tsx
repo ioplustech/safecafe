@@ -18,6 +18,7 @@ import type { AccountSummary, Action, DataStatus, Modal, NavItem } from "./types
 import { ActionButton, CustomSelect, FullPanel, InfoCard, Progress, StatusBadge, Tooltip } from "./ui"
 
 type ValidatorSort = "stake" | "participation" | "commission" | "name" | "yourStake"
+type SubmittingAction = Action | "claim-rewards-and-stake" | null
 const validatorSkeletonKeys = [
   "validator-skeleton-1",
   "validator-skeleton-2",
@@ -31,9 +32,11 @@ export function DashboardView(props: {
   amount: string
   accountReady: boolean
   connectedAccount: Address | null
+  executeClaimRewardsAndStake: (validator: Address) => Promise<void>
   executeAction: (action?: Action) => Promise<void>
   isLoadingValidators: boolean
   isSubmitting: boolean
+  submittingAction: SubmittingAction
   modal: Modal
   onConnect: () => Promise<void>
   openExplorer: (address: Address) => void
@@ -58,6 +61,9 @@ export function DashboardView(props: {
   const { t } = props
   const hasValidators = props.validators.length > 0
   const accountActionLabel = props.connectedAccount ? t.refreshLive : t.connectWallet
+  const stakeOrUnstakeLoading = props.submittingAction === props.action
+  const claimRewardsLoading = props.submittingAction === "claim-rewards"
+  const claimAndStakeLoading = props.submittingAction === "claim-rewards-and-stake"
   const validatorOptions = props.validators.map((item) => ({
     value: item.address,
     label: item.label,
@@ -137,7 +143,7 @@ export function DashboardView(props: {
                 disabled={props.isSubmitting}
                 onClick={() => void (props.accountReady ? props.executeAction() : props.onConnect())}
               >
-                {props.isSubmitting
+                {stakeOrUnstakeLoading
                   ? t.preparingAction
                   : !props.accountReady
                     ? accountActionLabel
@@ -155,14 +161,41 @@ export function DashboardView(props: {
           )}
           {props.action === "claim-rewards" && (
             <div className="form-row slide-down">
-              <button
-                type="button"
-                className="primary-button"
-                disabled={props.isSubmitting}
-                onClick={() => void (props.accountReady ? props.executeAction("claim-rewards") : props.onConnect())}
-              >
-                {props.isSubmitting ? t.preparingAction : !props.accountReady ? accountActionLabel : t.claimRewards}
-              </button>
+              <div className="field-group restake-target-field">
+                <span className="field-label">{t.restakeTargetValidator}</span>
+                <CustomSelect
+                  disabled={!hasValidators || props.isSubmitting}
+                  label={t.restakeTargetValidator}
+                  value={props.validator}
+                  onChange={(value) => props.setValidator(value as Address)}
+                  options={validatorOptions}
+                />
+              </div>
+              <div className="claim-action-row">
+                <button
+                  type="button"
+                  className="primary-button"
+                  disabled={props.isSubmitting}
+                  onClick={() => void (props.accountReady ? props.executeAction("claim-rewards") : props.onConnect())}
+                >
+                  {claimRewardsLoading ? t.preparingAction : !props.accountReady ? accountActionLabel : t.claimRewards}
+                </button>
+                <button
+                  type="button"
+                  className="feature-button"
+                  disabled={props.isSubmitting}
+                  onClick={() =>
+                    void (props.accountReady ? props.executeClaimRewardsAndStake(props.validator) : props.onConnect())
+                  }
+                >
+                  <span aria-hidden="true">✨</span>
+                  {claimAndStakeLoading
+                    ? t.preparingAction
+                    : !props.accountReady
+                      ? accountActionLabel
+                      : t.claimRewardsAndStake}
+                </button>
+              </div>
               {props.txProgress && (
                 <p className="action-progress-note">
                   <span className="spinner" />
@@ -274,14 +307,16 @@ export function ValidatorTable(props: {
                   {t.unstakeAction}
                 </button>
               </Tooltip>
-              <button
-                className="row-arrow"
-                type="button"
-                title={t.more}
-                onClick={() => props.setModal({ type: "validator", validator: item })}
-              >
-                ›
-              </button>
+              <Tooltip label={t.more}>
+                <button
+                  className="row-arrow"
+                  type="button"
+                  aria-label={t.more}
+                  onClick={() => props.setModal({ type: "validator", validator: item })}
+                >
+                  ›
+                </button>
+              </Tooltip>
             </div>
           </article>
         )
@@ -437,7 +472,12 @@ function StakingOverview({
         </div>
       </div>
       <div className="overview-footer">
-        <span>{t.participation}</span>
+        <span>
+          {t.validatorParticipation}
+          <Tooltip label={t.validatorParticipationSummaryTooltip}>
+            <Info size={14} />
+          </Tooltip>
+        </span>
         <strong>95%+</strong>
       </div>
       <div className="overview-validator-list">
@@ -479,12 +519,14 @@ function compareBigintDesc(a: bigint, b: bigint) {
 export function WithdrawalsView(props: {
   executeAction: (action?: Action) => Promise<void>
   isSubmitting: boolean
+  submittingAction: SubmittingAction
   t: MessageBundle
   selectAction: (action: Action) => void
   summary: AccountSummary
   txProgress: string
 }) {
   const { t } = props
+  const isClaimingWithdrawal = props.submittingAction === "claim-withdrawal"
   return (
     <FullPanel title={t.withdrawals}>
       <div className="split-cards">
@@ -514,7 +556,7 @@ export function WithdrawalsView(props: {
             void props.executeAction("claim-withdrawal")
           }}
         >
-          {props.isSubmitting ? t.preparingAction : t.claimWithdrawals}
+          {isClaimingWithdrawal ? t.preparingAction : t.claimWithdrawals}
         </button>
         {props.txProgress && (
           <p className="action-progress-note">
@@ -531,12 +573,14 @@ export function RewardsView(props: {
   dataStatus: DataStatus
   executeAction: (action?: Action) => Promise<void>
   isSubmitting: boolean
+  submittingAction: SubmittingAction
   t: MessageBundle
   selectAction: (action: Action) => void
   summary: AccountSummary
   txProgress: string
 }) {
   const { t } = props
+  const isClaimingRewards = props.submittingAction === "claim-rewards"
   return (
     <FullPanel title={t.rewards}>
       <div className="split-cards">
@@ -562,7 +606,7 @@ export function RewardsView(props: {
             void props.executeAction("claim-rewards")
           }}
         >
-          {props.isSubmitting ? t.preparingAction : t.claimRewards}
+          {isClaimingRewards ? t.preparingAction : t.claimRewards}
         </button>
         {props.txProgress && (
           <p className="action-progress-note">

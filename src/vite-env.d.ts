@@ -3,6 +3,7 @@
 interface ImportMetaEnv {
   readonly VITE_TOAST_DURATION_MS?: string
   readonly VITE_AGENT_LAUNCHER_DRAGGABLE?: string
+  readonly VITE_AGENT_AUTH?: string
   readonly VITE_MOCK_REWARD_PROOF?: string
 }
 

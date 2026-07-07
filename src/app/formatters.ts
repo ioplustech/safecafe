@@ -41,6 +41,7 @@ export function translateTxTitle(plan: TxPlan, t: MessageBundle) {
   if (plan.action === "unstake") return `${t.txUnstakeTitle} ${plan.title.replace(/^Unstake\s+/, "")}`
   if (plan.action === "claim-withdrawal") return t.txClaimWithdrawalTitle
   if (plan.action === "claim-rewards") return t.txClaimRewardsTitle
+  if (plan.title === "Claim and stake rewards") return t.txClaimAndStakeRewardsTitle
   return plan.title
 }
 
@@ -66,7 +67,46 @@ export function readableSimulationError(error: unknown, fallback: string) {
     const shortMessage = (error as { shortMessage?: unknown }).shortMessage
     if (typeof shortMessage === "string" && shortMessage.trim()) return shortMessage
   }
-  return error instanceof Error ? error.message : fallback
+  if (typeof error === "object" && error !== null && "details" in error) {
+    const details = (error as { details?: unknown }).details
+    const parsed = readableJsonRpcError(details)
+    if (parsed) return parsed
+  }
+  if (error instanceof Error) return readableJsonRpcError(error.message) ?? error.message
+  return readableJsonRpcError(error) ?? fallback
+}
+
+function readableJsonRpcError(value: unknown) {
+  if (typeof value !== "string") return null
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  try {
+    const parsed = JSON.parse(trimmed) as unknown
+    if (typeof parsed !== "object" || parsed === null || !("error" in parsed)) return null
+    const rpcError = (parsed as { error?: unknown }).error
+    if (typeof rpcError !== "object" || rpcError === null) return null
+    const code = (rpcError as { code?: unknown }).code
+    const message = (rpcError as { message?: unknown }).message
+    const codeText = typeof code === "number" || typeof code === "string" ? `RPC ${code}` : "RPC error"
+    const data = (rpcError as { data?: unknown }).data
+    const details = readableJsonRpcDetails(data)
+    const summary = typeof message === "string" && message.trim() ? `${codeText}: ${message}` : codeText
+    return details ? `${summary} (${details})` : summary
+  } catch {
+    return null
+  }
+}
+
+function readableJsonRpcDetails(data: unknown) {
+  if (typeof data !== "object" || data === null) return ""
+  const parts: string[] = []
+  const method = (data as { method?: unknown }).method
+  const reason = (data as { reason?: unknown }).reason
+  const requestId = (data as { requestId?: unknown }).requestId
+  if (typeof method === "string" && method.trim()) parts.push(`method: ${method}`)
+  if (typeof reason === "string" && reason.trim()) parts.push(`reason: ${reason}`)
+  if (typeof requestId === "string" && requestId.trim()) parts.push(`request: ${requestId}`)
+  return parts.join(", ")
 }
 
 export function merkleLabel(t: MessageBundle, matched: boolean | null) {

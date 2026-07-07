@@ -5,13 +5,15 @@ import { CHAIN_ID, compactAddress, formatSafe } from "../protocol"
 import { merkleLabel } from "./formatters"
 import type { MessageBundle } from "./i18n"
 import type { DataStatus, Modal } from "./types"
-import { ChecklistRow, KeyValue } from "./ui"
+import { ChecklistRow, CustomSelect, KeyValue, Tooltip } from "./ui"
 
 export function DetailModal(props: {
   account: Address | null
-  signerAccount: Address | null
   subjectAccount: Address | null
   subjectKind: "self" | "safe"
+  discoveredSafes: Address[]
+  safeDiscoveryError: string
+  safeDiscoveryStatus: "failed" | "idle" | "loading" | "ready"
   copyText: (value: string) => Promise<void>
   dataStatus: DataStatus
   disconnectWallet: () => void
@@ -22,8 +24,8 @@ export function DetailModal(props: {
   onUseSignerAsSubject: () => void
   t: MessageBundle
 }) {
-  const { account, dataStatus, modal, onClose, signerAccount, subjectAccount, subjectKind, t } = props
-  const [subjectInput, setSubjectInput] = useState(subjectAccount ?? "")
+  const { account, dataStatus, modal, onClose, subjectAccount, subjectKind, t } = props
+  const [subjectInput, setSubjectInput] = useState(subjectKind === "safe" ? (subjectAccount ?? "") : "")
   const dialogRef = useRef<HTMLDivElement>(null)
   const closeButtonRef = useRef<HTMLButtonElement>(null)
   useEffect(() => {
@@ -41,8 +43,8 @@ export function DetailModal(props: {
   }, [])
 
   useEffect(() => {
-    setSubjectInput(subjectAccount ?? "")
-  }, [subjectAccount])
+    setSubjectInput(subjectKind === "safe" ? (subjectAccount ?? "") : "")
+  }, [subjectAccount, subjectKind])
 
   let title = t.viewReadiness
   let content: ReactNode = <p>{t.readinessDescription}</p>
@@ -144,12 +146,38 @@ export function DetailModal(props: {
           copyText={props.copyText}
           openExplorer={props.openExplorer}
         />
-        <label className="modal-field">
+        <div className="modal-field">
           <span>{t.managedSafeAddress}</span>
+          <CustomSelect
+            disabled={props.safeDiscoveryStatus === "loading" || props.discoveredSafes.length === 0}
+            label={t.managedSafeAddress}
+            value={subjectKind === "safe" ? (subjectAccount ?? "") : ""}
+            onChange={(value) => {
+              setSubjectInput(value)
+              props.onRefreshSubject(value)
+            }}
+            options={props.discoveredSafes.map((safe, index) => ({
+              value: safe,
+              label: `${t.managedSafeAddress} ${index + 1}`,
+              detail: compactAddress(safe, 10, 8),
+            }))}
+          />
+          <small className="modal-field-note">
+            {props.safeDiscoveryStatus === "loading"
+              ? t.safeDiscoveryLoading
+              : props.safeDiscoveryStatus === "failed"
+                ? props.safeDiscoveryError || t.safeDiscoveryFailed
+                : props.discoveredSafes.length
+                  ? t.safeDiscoveryReady
+                  : t.safeDiscoveryEmpty}
+          </small>
+        </div>
+        <label className="modal-field">
+          <span>{t.safeManualAddress}</span>
           <input
             value={subjectInput}
             spellCheck={false}
-            placeholder={signerAccount ?? "0x..."}
+            placeholder="0x..."
             onChange={(event) => setSubjectInput(event.target.value)}
           />
         </label>
@@ -190,16 +218,17 @@ export function DetailModal(props: {
       <div className="modal-card">
         <div className="panel-title">
           <h2>{title}</h2>
-          <button
-            ref={closeButtonRef}
-            type="button"
-            className="icon-button"
-            onClick={onClose}
-            aria-label={t.closeNotification}
-            title={t.closeNotification}
-          >
-            <X size={16} />
-          </button>
+          <Tooltip label={t.closeNotification}>
+            <button
+              ref={closeButtonRef}
+              type="button"
+              className="icon-button"
+              onClick={onClose}
+              aria-label={t.closeNotification}
+            >
+              <X size={16} />
+            </button>
+          </Tooltip>
         </div>
         <div className="modal-body">{content}</div>
       </div>
@@ -228,24 +257,26 @@ function AddressRow(props: {
             {props.suffix ? <em>{props.suffix}</em> : null}
           </strong>
           <div className="address-row-actions">
-            <button
-              type="button"
-              className="icon-button"
-              onClick={() => props.copyText(address)}
-              aria-label={`${props.copyLabel} ${props.label}`}
-              title={props.copyLabel}
-            >
-              <Copy size={15} />
-            </button>
-            <button
-              type="button"
-              className="icon-button"
-              onClick={() => props.openExplorer(address)}
-              aria-label={`${props.openLabel} ${props.label}`}
-              title={props.openLabel}
-            >
-              <ArrowUpRight size={15} />
-            </button>
+            <Tooltip label={props.copyLabel}>
+              <button
+                type="button"
+                className="icon-button"
+                onClick={() => props.copyText(address)}
+                aria-label={`${props.copyLabel} ${props.label}`}
+              >
+                <Copy size={15} />
+              </button>
+            </Tooltip>
+            <Tooltip label={props.openLabel}>
+              <button
+                type="button"
+                className="icon-button"
+                onClick={() => props.openExplorer(address)}
+                aria-label={`${props.openLabel} ${props.label}`}
+              >
+                <ArrowUpRight size={15} />
+              </button>
+            </Tooltip>
           </div>
         </>
       ) : (

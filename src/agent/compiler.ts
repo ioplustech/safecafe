@@ -99,8 +99,15 @@ export function compileAgentPlan(instruction: string, intent: AgentIntent, conte
         plan.phases.push(rewardsPlan.phase, {
           id: "restake",
           title: `Restake ${amount.text} SAFE to ${validator.label}`,
-          executableNow: false,
-          plans: [],
+          executableNow: true,
+          plans: [
+            planStake({
+              validator: validator.address,
+              amount: amount.text,
+              account: subjectAccount,
+              allowance: context.liveSnapshot.stakingAllowance,
+            }),
+          ],
           risks: stakeRisks,
         })
       }
@@ -246,5 +253,5 @@ function blocked(code: string, message: string): AgentRisk {
 }
 
 function stakingSubject(context: AgentContext) {
-  return context.subjectAccount ?? context.account
+  return context.subjectAccount ?? context.account ?? null
 }

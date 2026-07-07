@@ -1,5 +1,4 @@
 import { decodeFunctionData, parseAbi } from "viem"
-import { DEFAULT_RPC_URLS } from "../../src/protocol/contracts.ts"
 import { mockValidators, stringifyBigints } from "./mockChain.mjs"
 
 const eth = 10n ** 18n
@@ -22,8 +21,9 @@ export function createWebTestDriver({ account, baseUrl, chain, page }) {
   if (!page) throw new Error("createWebTestDriver requires page")
 
   async function install() {
+    await installCleanStorage(page)
     await chain.installWallet(page, typeof account === "string" ? account : account.address)
-    await installRoutes(page, chain)
+    await installInternalApiMocks(page, chain)
   }
 
   async function open() {
@@ -63,6 +63,11 @@ export function createWebTestDriver({ account, baseUrl, chain, page }) {
   async function claimRewards() {
     await page.getByRole("button", { exact: true, name: "Rewards" }).click()
     await page.getByRole("button", { name: "Claim Rewards" }).click()
+  }
+
+  async function claimRewardsAndStake() {
+    await selectDashboardAction("Claim Rewards")
+    await page.locator(".primary-actions-panel .feature-button").click()
   }
 
   async function selectDashboardAction(action) {
@@ -152,6 +157,19 @@ export function createWebTestDriver({ account, baseUrl, chain, page }) {
     )
   }
 
+  async function expectLastStakeAmount(amount) {
+    await expectEventually(
+      async () => {
+        const txs = await walletTransactions()
+        const stakeTx = [...txs].reverse().find((entry) => labelTransaction(entry.tx) === "stake")
+        if (!stakeTx) return false
+        const decoded = decodeKnownTransaction(stakeTx.tx)
+        return decoded?.functionName === "stake" && decoded.args[1] === toWei(amount)
+      },
+      async () => `Expected last stake amount ${amount}, got ${stringifyBigints(await walletTransactions())}`,
+    )
+  }
+
   async function expectSafeBalance(amount) {
     await expectEventually(
       () => chain.state.safeBalance === toWei(amount),
@@ -213,6 +231,17 @@ export function createWebTestDriver({ account, baseUrl, chain, page }) {
     await page.evaluate(() => window.localStorage.removeItem("safecafe:rpc-session"))
   }
 
+  async function clearAgentSessions() {
+    await page.evaluate(() => {
+      window.localStorage.removeItem("safecafe:agent:sessions")
+      window.localStorage.removeItem("safecafe:agent:active-session")
+    })
+  }
+
+  async function refreshLiveData() {
+    await page.reload({ waitUntil: "networkidle" })
+  }
+
   async function expectNoVisibleText(text) {
     const matches = page.getByText(text)
     const count = await matches.count()
@@ -250,8 +279,10 @@ export function createWebTestDriver({ account, baseUrl, chain, page }) {
   return {
     clickActionMax,
     claimRewards,
+    claimRewardsAndStake,
     claimWithdrawal,
     clearRpcSession,
+    clearAgentSessions,
     connectWallet,
     expectCumulativeClaimed,
     expectActionSelectDetail,
@@ -264,6 +295,7 @@ export function createWebTestDriver({ account, baseUrl, chain, page }) {
     expectSummary,
     expectTotalStaked,
     expectLastTxSequence,
+    expectLastStakeAmount,
     expectTxSequence,
     expectValidatorStake,
     expectWalletPersonalSignCountAtLeast,
@@ -272,6 +304,7 @@ export function createWebTestDriver({ account, baseUrl, chain, page }) {
     open,
     openAndConnect,
     fillActionAmount,
+    refreshLiveData,
     selectDashboardAction,
     stake,
     submitPrimaryAction,
@@ -281,8 +314,16 @@ export function createWebTestDriver({ account, baseUrl, chain, page }) {
   }
 }
 
-export async function installRoutes(page, chain) {
+async function installCleanStorage(page) {
+  await page.addInitScript(() => {
+    window.localStorage.removeItem("safecafe:agent:sessions")
+    window.localStorage.removeItem("safecafe:agent:active-session")
+  })
+}
+
+export async function installInternalApiMocks(page, chain) {
   await page.route("**/api/account/live?**", (route) => chain.fulfillAccountLive(route))
+  await page.route("**/api/agent", (route) => chain.fulfillAgent(route))
   await page.route("**/api/auth/challenge", (route) => chain.fulfillAuthChallenge(route))
   await page.route("**/api/auth/verify", (route) => chain.fulfillAuthVerify(route))
   await page.route("**/api/price/safe", (route) =>
@@ -292,13 +333,13 @@ export async function installRoutes(page, chain) {
       body: JSON.stringify({ source: "CoinGecko", usd: 0.0927, fetchedAt: Date.now() }),
     }),
   )
+  await page.route("**/api/safes?**", (route) => chain.fulfillSafes(route))
   await page.route("**/api/rpc/ethereum", (route) => chain.fulfillRpc(route))
-  for (const rpcUrl of DEFAULT_RPC_URLS) {
-    await page.route(rpcUrl, (route) => chain.fulfillRpc(route))
-  }
   await page.route("**/assets/validator-info.json", (route) => chain.fulfillValidators(route))
   await page.route("**/proofs/**", (route) => chain.fulfillRewardProof(route))
 }
+
+export const installRoutes = installInternalApiMocks
 
 export async function waitForBodyText(page, text) {
   await page.waitForFunction((expected) => document.body.innerText.includes(expected), text)
@@ -318,16 +359,21 @@ export function wait(ms) {
 }
 
 function labelTransaction(tx) {
+  const decoded = decodeKnownTransaction(tx)
+  if (!decoded) return "unknown"
+  if (decoded.functionName === "claim") return "claimRewards"
+  return decoded.functionName
+}
+
+function decodeKnownTransaction(tx) {
   for (const abi of transactionAbis) {
     try {
-      const decoded = decodeFunctionData({ abi, data: tx?.data })
-      if (decoded.functionName === "claim") return "claimRewards"
-      return decoded.functionName
+      return decodeFunctionData({ abi, data: tx?.data })
     } catch {
       // Try the next ABI.
     }
   }
-  return "unknown"
+  return null
 }
 
 function toWei(amount) {

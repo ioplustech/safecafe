@@ -3,34 +3,46 @@ import {
   Check,
   CheckCircle2,
   ChevronDown,
-  Download,
   FilePlus2,
   Loader2,
   MessageSquare,
+  Play,
   Send,
+  ShieldAlert,
+  ShieldCheck,
+  ShieldOff,
+  ShieldQuestion,
+  Square,
   Trash2,
   Wallet,
   Wrench,
   X,
 } from "lucide-react"
-import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react"
+import { type KeyboardEvent, useEffect, useId, useMemo, useRef, useState } from "react"
+import { type Address, isAddress } from "viem"
 import {
+  type AgentAmount,
   type AgentContext,
   type AgentIntent,
   type AgentPlan,
   type AgentRisk,
+  type AgentValidatorRef,
   compileAgentPlan,
   flattenCurrentExecutableTxPlan,
   flattenExecutableTxPlan,
   hasAgentServiceAccess,
   parseAgentInstruction,
+  readStoredAgentSessions,
   requestAgentReplyStream,
+  serializeAgentSessions,
   toAgentChatContext,
 } from "../agent"
 import { compactAddress, type TxPlan } from "../protocol"
 import { AgentLogo } from "./AgentLogo"
+import { isAgentAuthRequired } from "./agentAuthConfig"
 import { translateTxLabel, translateTxWarning } from "./formatters"
 import type { MessageBundle } from "./i18n"
+import { Tooltip } from "./ui"
 
 type AgentChatMessage = {
   id: string
@@ -38,7 +50,14 @@ type AgentChatMessage = {
   content: string
   isLoading?: boolean
   thinking?: string
+  thinkingPinned?: boolean
   thinkingOpen?: boolean
+  contentExpanded?: boolean
+}
+
+type PreparedStakingActionData = {
+  intent?: AgentIntent
+  requiresWalletConfirmation?: boolean
 }
 
 type AgentSession = {
@@ -52,14 +71,16 @@ type AgentSession = {
   warningsAccepted: boolean
 }
 
+type AgentAuthStatus = "auth-disabled" | "connected" | "needs-live-data" | "needs-signature" | "no-access" | "no-wallet"
+
 export type AgentChatDialogProps = {
   t: MessageBundle
   isOpen: boolean
+  isClosing?: boolean
   anchor: { x: number; y: number } | null
   context: AgentContext
   isSubmitting: boolean
   rpcAuthToken: string | null
-  onApplyPlan: (plan: TxPlan) => void
   onAuthenticateAgent: () => Promise<string | null>
   onClose: () => void
   onConnectWallet: () => Promise<void>
@@ -68,20 +89,27 @@ export type AgentChatDialogProps = {
   onSubmitPlan: (plan: TxPlan) => Promise<void>
 }
 
+const agentAuthRequired = isAgentAuthRequired()
+const agentSessionsStorageKey = "safecafe:agent:sessions"
+const agentActiveSessionStorageKey = "safecafe:agent:active-session"
+
 export function AgentChatDialog(props: AgentChatDialogProps) {
   const [input, setInput] = useState("")
-  const [sessions, setSessions] = useState<AgentSession[]>(() => [createSession(props.t.agentNewSession)])
-  const [activeSessionId, setActiveSessionId] = useState(() => sessions[0].id)
+  const [sessions, setSessions] = useState<AgentSession[]>(() => loadStoredSessions(props.t.agentNewSession))
+  const [activeSessionId, setActiveSessionId] = useState(() => loadStoredActiveSessionId(sessions))
   const [isDrafting, setIsDrafting] = useState(false)
   const [isStreaming, setIsStreaming] = useState(false)
   const [isSessionMenuOpen, setIsSessionMenuOpen] = useState(false)
+  const composerId = useId()
   const requestSeqRef = useRef(0)
   const contextKeyRef = useRef("")
+  const streamAbortRef = useRef<AbortController | null>(null)
   const dialogRef = useRef<HTMLElement>(null)
   const sessionMenuRef = useRef<HTMLDivElement>(null)
   const composerRef = useRef<HTMLTextAreaElement>(null)
   const messageListRef = useRef<HTMLDivElement>(null)
   const messageEndRef = useRef<HTMLDivElement>(null)
+  const didHydrateStorageRef = useRef(false)
 
   const activeSession = sessions.find((session) => session.id === activeSessionId) ?? sessions[0]
   const currentContextKey = agentContextKey(props.context)
@@ -92,11 +120,18 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
     [activeSession.draft, activeSession.executablePlan],
   )
   const canUsePlan = Boolean(
-    activeSession.executablePlan && !blocked && !isStale && (warnings.length === 0 || activeSession.warningsAccepted),
+    activeSession.executablePlan &&
+      activeSession.executablePlan.simulation?.status !== "failed" &&
+      !blocked &&
+      !isStale &&
+      (warnings.length === 0 || activeSession.warningsAccepted),
   )
-  const canChat = Boolean(props.context.account)
   const agentAccess = hasAgentServiceAccess(props.context)
-  const isBusy = isDrafting || isStreaming || props.isSubmitting
+  const authStatus = resolveAgentAuthStatus(props.context, agentAccess, props.rpcAuthToken)
+  const authStatusView = getAgentAuthStatusView(authStatus, props.t)
+  const canChat = authStatus === "connected" || authStatus === "auth-disabled"
+  const canStopAgentRun = isDrafting || isStreaming
+  const isBusy = canStopAgentRun || props.isSubmitting
   const lastMessage = activeSession.messages[activeSession.messages.length - 1]
   const scrollSignal = useMemo(
     () =>
@@ -115,11 +150,13 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
     if (!props.isOpen) return
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.key === "Escape") {
+        event.preventDefault()
         if (isSessionMenuOpen) {
           setIsSessionMenuOpen(false)
-          return
+        } else {
+          props.onClose()
         }
-        props.onClose()
+        return
       }
       if (event.key === "Tab") trapFocus(event, dialogRef.current)
     }
@@ -142,6 +179,20 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
     const frame = window.requestAnimationFrame(() => composerRef.current?.focus())
     return () => window.cancelAnimationFrame(frame)
   }, [props.isOpen])
+
+  useEffect(() => {
+    if (!sessions.some((session) => session.id === activeSessionId) && sessions[0]) setActiveSessionId(sessions[0].id)
+  }, [activeSessionId, sessions])
+
+  useEffect(() => {
+    if (!didHydrateStorageRef.current) {
+      didHydrateStorageRef.current = true
+      return
+    }
+    if (typeof window === "undefined") return
+    window.localStorage.setItem(agentSessionsStorageKey, JSON.stringify(serializeAgentSessions(sessions)))
+    window.localStorage.setItem(agentActiveSessionStorageKey, activeSessionId)
+  }, [activeSessionId, sessions])
 
   useEffect(() => {
     void scrollSignal
@@ -167,6 +218,8 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
     if (contextKeyRef.current === currentContextKey) return
     contextKeyRef.current = currentContextKey
     requestSeqRef.current += 1
+    streamAbortRef.current?.abort()
+    streamAbortRef.current = null
     setIsDrafting(false)
     setIsStreaming(false)
     setSessions((current) =>
@@ -188,17 +241,43 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
   async function send(text = input) {
     const trimmed = text.trim()
     if (!trimmed || isBusy) return
+    if (canChat && isConfirmationText(trimmed) && activeSession.executablePlan) {
+      setInput("")
+      resetComposer(composerRef.current)
+      updateActiveSession((session) => ({
+        ...session,
+        messages: [...session.messages, createMessage("user", trimmed)],
+      }))
+      if (!canUsePlan) {
+        updateActiveSession((session) => ({
+          ...session,
+          messages: [
+            ...session.messages,
+            createMessage("assistant", resolvePlanNotReadyMessage(props.t, warnings, activeSession.executablePlan)),
+          ],
+        }))
+        return
+      }
+      void submitActivePlan()
+      return
+    }
     if (!canChat) {
       setInput("")
+      resetComposer(composerRef.current)
+      updateActiveSession((session) => ({
+        ...session,
+        messages: [...session.messages, createMessage("assistant", authStatusView.body)],
+      }))
       return
     }
     const requestId = requestSeqRef.current + 1
     requestSeqRef.current = requestId
     const requestSessionId = activeSession.id
     setInput("")
+    resetComposer(composerRef.current)
     const history = activeSession.messages
-      .filter((message) => message.role === "assistant" || message.role === "user")
-      .map(({ role, content }) => ({ role: role as "assistant" | "user", content }))
+      .filter((message) => message.role === "assistant" || message.role === "tool" || message.role === "user")
+      .map(({ role, content }) => ({ role: role as "assistant" | "tool" | "user", content }))
     updateActiveSession((session) => ({
       ...session,
       draft: null,
@@ -212,115 +291,40 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
     const candidate = shouldStartNewIntent(trimmed)
       ? trimmed
       : joinPendingIntent(activeSession.pendingIntentText, trimmed)
-    const parse = parseAgentInstruction(candidate, props.context.validators)
-
-    if (parse.status === "needs-clarification") {
-      updateActiveSession((session) => ({
-        ...session,
-        pendingIntentText: candidate,
-        messages: [
-          ...session.messages,
-          createMessage(
-            "assistant",
-            !props.context.account ? props.t.agentClarifyWithoutWallet : localizeClarification(parse.question, props.t),
-          ),
-        ],
-      }))
-      return
-    }
     updateActiveSession((session) => ({ ...session, pendingIntentText: "" }))
-    if (parse.status === "blocked") {
-      updateActiveSession((session) => ({
-        ...session,
-        messages: [...session.messages, createMessage("assistant", riskText(parse.risks, props.t))],
-      }))
-      return
-    }
-    if (
-      !props.context.account ||
-      !(props.context.subjectAccount ?? props.context.account) ||
-      !props.context.liveSnapshot
-    ) {
-      updateActiveSession((session) => ({
-        ...session,
-        messages: [
-          ...session.messages,
-          createMessage(
-            "assistant",
-            props.context.account ? props.t.agentWalletRequired : props.t.agentPreviewWithoutWallet,
-          ),
-        ],
-      }))
-      return
-    }
-    if (!agentAccess) {
-      updateActiveSession((session) => ({
-        ...session,
-        messages: [...session.messages, createMessage("assistant", props.t.agentAccessRequired)],
-      }))
-      return
-    }
-
-    const authToken = await props.onAuthenticateAgent()
-    if (!authToken) {
+    const authToken = agentAuthRequired ? (props.rpcAuthToken ?? (await props.onAuthenticateAgent())) : null
+    if (agentAuthRequired && !authToken) {
       updateActiveSession((session) => ({
         ...session,
         messages: [...session.messages, createMessage("assistant", props.t.agentAuthRequired)],
       }))
       return
     }
-
-    setIsDrafting(true)
-    updateActiveSession((session) => ({
-      ...session,
-      messages: [...session.messages, createMessage("tool", props.t.agentToolReadWallet, true)],
-    }))
-    try {
-      const nextDraft = compileAgentPlan(candidate, parse.intent, props.context)
-      if (requestSeqRef.current !== requestId) return
-      updateSession(requestSessionId, (session) => ({ ...session, draft: nextDraft }))
-      updateLastLoadingTool(requestSessionId, props.t.agentToolCompilePlan)
-      const flattened = flattenExecutableTxPlan(nextDraft) ?? flattenCurrentExecutableTxPlan(nextDraft)
-      updateLastLoadingTool(requestSessionId, props.t.agentToolSimulatePlan)
-      const simulated = flattened ? await props.onSimulatePlan(flattened) : null
-      if (requestSeqRef.current !== requestId) return
-      updateSession(requestSessionId, (session) => ({
-        ...session,
-        draftKey: currentContextKey,
-        executablePlan: simulated,
-      }))
-      finishLastLoadingTool(requestSessionId, props.t.agentToolReady)
-      updateSession(requestSessionId, (session) => ({
-        ...session,
-        messages: [
-          ...session.messages,
-          createMessage("assistant", simulated ? props.t.agentPlanReady : props.t.agentPlanDrafted),
-        ],
-      }))
-      void appendAgentReply(trimmed, history, requestId, requestSessionId, authToken)
-    } catch (error) {
-      finishLastLoadingTool(requestSessionId, props.t.agentToolFailed)
-      updateSession(requestSessionId, (session) => ({
-        ...session,
-        messages: [
-          ...session.messages,
-          createMessage("assistant", error instanceof Error ? error.message : props.t.buildPlanFailed),
-        ],
-      }))
-    } finally {
-      if (requestSeqRef.current === requestId) setIsDrafting(false)
+    const result = await appendAgentReply(candidate, history, requestId, requestSessionId, authToken)
+    if (requestSeqRef.current !== requestId) return
+    if (result.preparedIntent) {
+      await buildAndSimulateAgentPlan(candidate, result.preparedIntent, requestId, requestSessionId)
+      return
+    }
+    if (result.source === "fallback") {
+      await runLocalPlanFallback(candidate, requestId, requestSessionId)
     }
   }
 
   async function appendAgentReply(
     message: string,
-    history: Array<{ role: "assistant" | "user"; content: string }>,
+    history: Array<{ role: "assistant" | "tool" | "user"; content: string }>,
     requestId: number,
     sessionId: string,
-    authToken: string,
-  ) {
-    if (!agentAccess) return
+    authToken: string | null,
+  ): Promise<{ preparedIntent: AgentIntent | null; source: "fallback" | "llm" | null }> {
+    if (agentAuthRequired && !agentAccess) return { preparedIntent: null, source: null }
     const assistantId = createId()
+    const controller = new AbortController()
+    let preparedIntent: AgentIntent | null = null
+    let source: "fallback" | "llm" | null = null
+    streamAbortRef.current?.abort()
+    streamAbortRef.current = controller
     setIsStreaming(true)
     updateSession(sessionId, (session) => ({
       ...session,
@@ -337,7 +341,11 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
         (event) => {
           if (requestSeqRef.current !== requestId) return
           if (event.type === "thinking")
-            updateMessage(sessionId, assistantId, (item) => ({ ...item, thinking: event.content }))
+            updateMessage(sessionId, assistantId, (item) => ({
+              ...item,
+              thinking: event.content,
+              thinkingOpen: item.thinkingPinned ? item.thinkingOpen : false,
+            }))
           if (event.type === "delta") {
             updateMessage(sessionId, assistantId, (item) => ({
               ...item,
@@ -345,12 +353,20 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
               isLoading: false,
             }))
           }
+          if (event.type === "tool") {
+            upsertToolMessage(sessionId, event.callId, event.content || event.name, event.status === "running")
+            const intent = event.status === "completed" ? readPreparedIntent(event.name, event.data) : null
+            if (intent) preparedIntent = intent
+          }
           if (event.type === "final") {
+            source = event.source
             updateMessage(sessionId, assistantId, (item) => ({ ...item, content: event.content, isLoading: false }))
           }
         },
+        controller.signal,
       )
-    } catch {
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return { preparedIntent, source }
       if (requestSeqRef.current === requestId) {
         updateMessage(sessionId, assistantId, (item) => ({
           ...item,
@@ -358,9 +374,101 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
           isLoading: false,
         }))
       }
+      source = "fallback"
     } finally {
+      if (streamAbortRef.current === controller) streamAbortRef.current = null
       if (requestSeqRef.current === requestId) setIsStreaming(false)
     }
+    return { preparedIntent, source }
+  }
+
+  async function buildAndSimulateAgentPlan(
+    instruction: string,
+    intent: AgentIntent,
+    requestId: number,
+    sessionId: string,
+  ) {
+    if (!props.context.account || !props.context.subjectAccount || !props.context.liveSnapshot) {
+      updateSession(sessionId, (session) => ({
+        ...session,
+        messages: [
+          ...session.messages,
+          createMessage(
+            "assistant",
+            props.context.account ? props.t.agentWalletRequired : props.t.agentPreviewWithoutWallet,
+          ),
+        ],
+      }))
+      return
+    }
+    setIsDrafting(true)
+    try {
+      upsertToolMessage(sessionId, "local-compile-plan", props.t.agentToolCompilePlan, true)
+      const nextDraft = compileAgentPlan(instruction, intent, props.context)
+      if (requestSeqRef.current !== requestId) return
+      updateSession(sessionId, (session) => ({ ...session, draft: nextDraft }))
+      upsertToolMessage(sessionId, "local-simulate-plan", props.t.agentToolSimulatePlan, true)
+      const flattened = flattenExecutableTxPlan(nextDraft) ?? flattenCurrentExecutableTxPlan(nextDraft)
+      const simulated = flattened ? await props.onSimulatePlan(flattened) : null
+      if (requestSeqRef.current !== requestId) return
+      updateSession(sessionId, (session) => ({
+        ...session,
+        draftKey: currentContextKey,
+        executablePlan: simulated,
+      }))
+      finishToolMessage(sessionId, "local-compile-plan", props.t.agentToolReady)
+      finishToolMessage(
+        sessionId,
+        "local-simulate-plan",
+        simulated?.simulation?.status === "failed" ? props.t.agentToolFailed : props.t.agentToolReady,
+      )
+      updateSession(sessionId, (session) => ({
+        ...session,
+        messages: [
+          ...session.messages,
+          createMessage(
+            "assistant",
+            simulated?.simulation?.status === "failed"
+              ? props.t.agentPlanSimulationFailed
+              : simulated
+                ? props.t.agentPlanReady
+                : props.t.agentPlanDrafted,
+          ),
+        ],
+      }))
+    } catch (error) {
+      finishToolMessage(sessionId, "local-compile-plan", props.t.agentToolFailed)
+      finishToolMessage(sessionId, "local-simulate-plan", props.t.agentToolFailed)
+      updateSession(sessionId, (session) => ({
+        ...session,
+        messages: [
+          ...session.messages,
+          createMessage("assistant", error instanceof Error ? error.message : props.t.buildPlanFailed),
+        ],
+      }))
+    } finally {
+      if (requestSeqRef.current === requestId) setIsDrafting(false)
+    }
+  }
+
+  async function runLocalPlanFallback(candidate: string, requestId: number, sessionId: string) {
+    const parse = parseAgentInstruction(candidate, props.context.validators)
+    if (parse.status === "ok") {
+      await buildAndSimulateAgentPlan(candidate, parse.intent, requestId, sessionId)
+      return
+    }
+    if (parse.status === "needs-clarification") {
+      updateSession(sessionId, (session) => ({
+        ...session,
+        pendingIntentText: candidate,
+        messages: [...session.messages, createMessage("assistant", localizeClarification(parse.question, props.t))],
+      }))
+      return
+    }
+    updateSession(sessionId, (session) => ({
+      ...session,
+      messages: [...session.messages, createMessage("assistant", riskText(parse.risks, props.t))],
+    }))
   }
 
   function createNewSession() {
@@ -387,6 +495,19 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
     setIsSessionMenuOpen(false)
   }
 
+  function clearAllSessions() {
+    requestSeqRef.current += 1
+    resetBusy()
+    const session = createSession(props.t.agentNewSession)
+    setSessions([session])
+    setActiveSessionId(session.id)
+    setIsSessionMenuOpen(false)
+    if (typeof window !== "undefined") {
+      window.localStorage.removeItem(agentSessionsStorageKey)
+      window.localStorage.removeItem(agentActiveSessionStorageKey)
+    }
+  }
+
   function selectSession(sessionId: string) {
     if (sessionId === activeSessionId) {
       setIsSessionMenuOpen(false)
@@ -399,8 +520,29 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
   }
 
   function resetBusy() {
+    streamAbortRef.current?.abort()
+    streamAbortRef.current = null
     setIsDrafting(false)
     setIsStreaming(false)
+  }
+
+  function stopAgentRun() {
+    requestSeqRef.current += 1
+    streamAbortRef.current?.abort()
+    streamAbortRef.current = null
+    resetBusy()
+    updateActiveSession((session) => ({
+      ...session,
+      messages: session.messages.map((message) =>
+        message.isLoading
+          ? {
+              ...message,
+              content: message.content || props.t.agentStopped,
+              isLoading: false,
+            }
+          : message,
+      ),
+    }))
   }
 
   function updateActiveSession(updater: (session: AgentSession) => AgentSession) {
@@ -422,26 +564,33 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
     }))
   }
 
-  function updateLastLoadingTool(sessionId: string, content: string) {
+  function finishToolMessage(sessionId: string, toolCallId: string, content: string) {
     updateSession(sessionId, (session) => ({
       ...session,
-      messages: session.messages.map((message, index) =>
-        index === session.messages.length - 1 && message.role === "tool" && message.isLoading
-          ? { ...message, content }
-          : message,
+      messages: session.messages.map((message) =>
+        message.id === toolCallId && message.role === "tool" ? { ...message, content, isLoading: false } : message,
       ),
     }))
   }
 
-  function finishLastLoadingTool(sessionId: string, content: string) {
-    updateSession(sessionId, (session) => ({
-      ...session,
-      messages: session.messages.map((message, index) =>
-        index === session.messages.length - 1 && message.role === "tool" && message.isLoading
-          ? { ...message, content, isLoading: false }
-          : message,
-      ),
-    }))
+  function upsertToolMessage(sessionId: string, toolCallId: string, content: string, isLoading: boolean) {
+    updateSession(sessionId, (session) => {
+      const existingIndex = session.messages.findIndex(
+        (message) => message.id === toolCallId && message.role === "tool",
+      )
+      if (existingIndex >= 0) {
+        return {
+          ...session,
+          messages: session.messages.map((message, index) =>
+            index === existingIndex ? { ...message, content, isLoading } : message,
+          ),
+        }
+      }
+      return {
+        ...session,
+        messages: [...session.messages, { id: toolCallId, role: "tool", content, isLoading }],
+      }
+    })
   }
 
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -450,12 +599,29 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
     void send()
   }
 
+  function handleAuthStatusAction() {
+    if (!authStatusView.actionable) return
+    if (authStatus === "no-wallet") {
+      void props.onConnectWallet()
+      return
+    }
+    if (authStatus === "needs-signature") {
+      void props.onAuthenticateAgent()
+    }
+  }
+
+  async function submitActivePlan() {
+    const plan = activeSession.executablePlan
+    if (!plan || !canUsePlan) return
+    await props.onSubmitPlan(plan)
+  }
+
   if (!props.isOpen) return null
 
   return (
     <section
       ref={dialogRef}
-      className="agent-dialog"
+      className={`agent-dialog${props.isClosing ? " closing" : ""}`}
       role="dialog"
       aria-modal="true"
       aria-label={props.t.agentTitle}
@@ -477,6 +643,17 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
           </span>
         </div>
         <div className="agent-header-actions">
+          <Tooltip label={`${authStatusView.title}. ${authStatusView.body}`}>
+            <button
+              type="button"
+              className={`agent-auth-status ${authStatusView.tone}`}
+              aria-label={authStatusView.title}
+              aria-disabled={!authStatusView.actionable}
+              onClick={handleAuthStatusAction}
+            >
+              <AgentAuthStatusIcon status={authStatus} />
+            </button>
+          </Tooltip>
           <div className={`agent-session-menu ${isSessionMenuOpen ? "open" : ""}`} ref={sessionMenuRef}>
             <button
               type="button"
@@ -528,6 +705,10 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
                   <Trash2 size={15} />
                   {props.t.agentClearSession}
                 </button>
+                <button type="button" className="agent-session-clear danger" role="menuitem" onClick={clearAllSessions}>
+                  <Trash2 size={15} />
+                  {props.t.agentClearAllSessions}
+                </button>
               </div>
             )}
           </div>
@@ -539,17 +720,18 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
 
       <div className="agent-message-list" ref={messageListRef}>
         <article className="agent-message assistant">{props.t.agentGreeting}</article>
-        {!canChat ? (
+        {authStatus === "no-wallet" ? (
           <AgentDisconnectedPanel t={props.t} onConnectWallet={props.onConnectWallet} />
         ) : (
-          !agentAccess && (
+          authStatus !== "connected" &&
+          authStatus !== "auth-disabled" && (
             <article className="agent-access-panel">
-              <AgentLogo />
-              <span>{props.t.agentAccessRequired}</span>
+              <AgentAuthStatusIcon status={authStatus} />
+              <span>{authStatusView.body}</span>
             </article>
           )
         )}
-        {canChat && (
+        {props.context.account && (
           <div className="agent-prompt-chip-row">
             {[
               props.t.agentPromptClaimRewards,
@@ -557,9 +739,11 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
               props.t.agentPromptRestake,
               props.t.agentPromptRebalance,
             ].map((prompt) => (
-              <button type="button" key={prompt} disabled={isBusy} onClick={() => void send(prompt)}>
-                {prompt}
-              </button>
+              <Tooltip label={!canChat ? authStatusView.body : prompt} key={prompt}>
+                <button type="button" disabled={!canChat || isBusy} onClick={() => void send(prompt)}>
+                  {prompt}
+                </button>
+              </Tooltip>
             ))}
           </div>
         )}
@@ -570,7 +754,20 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
               message={message}
               key={message.id}
               onToggleThinking={() =>
-                updateMessage(activeSessionId, message.id, (item) => ({ ...item, thinkingOpen: !item.thinkingOpen }))
+                updateMessage(activeSessionId, message.id, (item) => {
+                  const thinkingOpen = !item.thinkingOpen
+                  return {
+                    ...item,
+                    thinkingOpen,
+                    thinkingPinned: true,
+                  }
+                })
+              }
+              onToggleContent={() =>
+                updateMessage(activeSessionId, message.id, (item) => ({
+                  ...item,
+                  contentExpanded: item.contentExpanded === false,
+                }))
               }
             />
           ))}
@@ -587,46 +784,169 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
             safeSubject={props.context.subjectKind === "safe"}
             isSubmitting={props.isSubmitting}
             onAcceptWarnings={(value) => updateActiveSession((session) => ({ ...session, warningsAccepted: value }))}
-            onApply={() => activeSession.executablePlan && props.onApplyPlan(activeSession.executablePlan)}
             onExport={() => activeSession.executablePlan && props.onExportPlan(activeSession.executablePlan)}
-            onSubmit={() => activeSession.executablePlan && void props.onSubmitPlan(activeSession.executablePlan)}
+            onSubmit={() => void submitActivePlan()}
           />
         )}
         <div className="agent-message-end" ref={messageEndRef} aria-hidden="true" />
       </div>
 
       <div className="agent-dialog-footer">
-        <label className="agent-composer">
-          <span>{props.t.agentPrompt}</span>
-          <textarea
-            ref={composerRef}
-            rows={2}
-            value={input}
-            placeholder={canChat ? props.t.agentPlaceholder : props.t.agentConnectToChat}
-            disabled={!canChat}
-            onChange={(event) => setInput(event.target.value)}
-            onKeyDown={handleComposerKeyDown}
-          />
-        </label>
-        {canChat ? (
+        <div className="agent-composer">
+          <label htmlFor={composerId}>{props.t.agentPrompt}</label>
+          <div className={`agent-composer-input ${canChat ? "" : "locked"}`}>
+            <textarea
+              id={composerId}
+              ref={composerRef}
+              rows={1}
+              value={input}
+              placeholder={canChat ? props.t.agentPlaceholder : authStatusView.body}
+              disabled={!canChat}
+              onChange={(event) => {
+                setInput(event.currentTarget.value)
+                resizeComposer(event.currentTarget)
+              }}
+              onKeyDown={handleComposerKeyDown}
+            />
+            {canChat && (
+              <button
+                type="button"
+                className={`agent-send-button ${canStopAgentRun ? "is-stopping" : ""} ${
+                  props.isSubmitting && !canStopAgentRun ? "is-loading" : ""
+                }`}
+                aria-label={canStopAgentRun ? props.t.agentStop : props.t.agentSend}
+                title={canStopAgentRun ? props.t.agentStop : props.t.agentSend}
+                disabled={(props.isSubmitting && !canStopAgentRun) || (!isBusy && !input.trim())}
+                onClick={() => (canStopAgentRun ? stopAgentRun() : void send())}
+              >
+                {canStopAgentRun ? (
+                  <>
+                    <Loader2 size={18} className="agent-send-spinner" aria-hidden="true" />
+                    <Square
+                      size={9}
+                      className="agent-stop-glyph"
+                      strokeWidth={0}
+                      fill="currentColor"
+                      aria-hidden="true"
+                    />
+                  </>
+                ) : props.isSubmitting ? (
+                  <Loader2 size={18} className="agent-send-spinner" aria-hidden="true" />
+                ) : (
+                  <Send size={18} className="agent-send-icon" strokeWidth={2.45} aria-hidden="true" />
+                )}
+              </button>
+            )}
+          </div>
+        </div>
+        {!canChat && (
           <button
             type="button"
-            className="agent-send-button"
-            disabled={isBusy || !input.trim()}
-            onClick={() => void send()}
+            className="agent-connect-button wide"
+            disabled={!authStatusView.actionable}
+            onClick={handleAuthStatusAction}
           >
-            {isBusy ? <Loader2 size={16} className="spin-icon" /> : <Send size={16} />}
-            {isBusy ? props.t.agentThinking : props.t.agentSend}
-          </button>
-        ) : (
-          <button type="button" className="agent-connect-button wide" onClick={() => void props.onConnectWallet()}>
-            <Wallet size={16} />
-            {props.t.connectWallet}
+            {authStatus === "needs-signature" ? <ShieldCheck size={16} /> : <Wallet size={16} />}
+            {authStatusView.actionLabel}
           </button>
         )}
       </div>
     </section>
   )
+}
+
+function AgentAuthStatusIcon(props: { status: AgentAuthStatus }) {
+  if (props.status === "connected") return <ShieldCheck size={17} />
+  if (props.status === "auth-disabled") return <ShieldOff size={17} />
+  if (props.status === "needs-signature") return <ShieldQuestion size={17} />
+  return <ShieldAlert size={17} />
+}
+
+function resizeComposer(field: HTMLTextAreaElement) {
+  const style = window.getComputedStyle(field)
+  const lineHeight = Number.parseFloat(style.lineHeight) || 20
+  const padding = Number.parseFloat(style.paddingTop) + Number.parseFloat(style.paddingBottom)
+  const border = Number.parseFloat(style.borderTopWidth) + Number.parseFloat(style.borderBottomWidth)
+  const minHeight = 44
+  const maxHeight = Math.ceil(lineHeight * 4 + padding + border)
+
+  field.style.height = "auto"
+  field.style.height = `${Math.max(minHeight, Math.min(field.scrollHeight, maxHeight))}px`
+  field.style.overflowY = field.scrollHeight > maxHeight ? "auto" : "hidden"
+}
+
+function resetComposer(field: HTMLTextAreaElement | null) {
+  if (!field) return
+  field.style.height = "44px"
+  field.style.overflowY = "hidden"
+}
+
+function resolveAgentAuthStatus(
+  context: AgentContext,
+  agentAccess: boolean,
+  rpcAuthToken: string | null,
+): AgentAuthStatus {
+  if (!context.account) return "no-wallet"
+  if (!context.subjectAccount || !context.liveSnapshot) return "needs-live-data"
+  if (!agentAuthRequired) return "auth-disabled"
+  if (!agentAccess) return "no-access"
+  if (!rpcAuthToken) return "needs-signature"
+  return "connected"
+}
+
+function getAgentAuthStatusView(status: AgentAuthStatus, t: MessageBundle) {
+  if (status === "connected") {
+    return {
+      actionable: false,
+      actionLabel: t.agentAuthReadyTitle,
+      body: t.agentAuthReadyBody,
+      title: t.agentAuthReadyTitle,
+      tone: "ready",
+    }
+  }
+  if (status === "auth-disabled") {
+    return {
+      actionable: false,
+      actionLabel: t.agentAuthDisabledTitle,
+      body: t.agentAuthDisabledBody,
+      title: t.agentAuthDisabledTitle,
+      tone: "off",
+    }
+  }
+  if (status === "needs-signature") {
+    return {
+      actionable: true,
+      actionLabel: t.agentAuthSignAction,
+      body: t.agentAuthSignBody,
+      title: t.agentAuthSignTitle,
+      tone: "pending",
+    }
+  }
+  if (status === "needs-live-data") {
+    return {
+      actionable: false,
+      actionLabel: t.agentAuthUnavailableAction,
+      body: t.agentAuthLiveDataBody,
+      title: t.agentAuthLiveDataTitle,
+      tone: "pending",
+    }
+  }
+  if (status === "no-access") {
+    return {
+      actionable: false,
+      actionLabel: t.agentAuthUnavailableAction,
+      body: t.agentAuthNoAccessBody,
+      title: t.agentAuthNoAccessTitle,
+      tone: "blocked",
+    }
+  }
+  return {
+    actionable: true,
+    actionLabel: t.agentAuthConnectAction,
+    body: t.agentAuthNoWalletBody,
+    title: t.agentAuthNoWalletTitle,
+    tone: "blocked",
+  }
 }
 
 function AgentDisconnectedPanel(props: { t: MessageBundle; onConnectWallet: () => Promise<void> }) {
@@ -652,12 +972,32 @@ function AgentDisconnectedPanel(props: { t: MessageBundle; onConnectWallet: () =
   )
 }
 
-function AgentMessageView(props: { t: MessageBundle; message: AgentChatMessage; onToggleThinking: () => void }) {
+function AgentMessageView(props: {
+  t: MessageBundle
+  message: AgentChatMessage
+  onToggleContent: () => void
+  onToggleThinking: () => void
+}) {
   const { message } = props
+  const hasContent = Boolean(message.content)
+  const canCollapseContent = shouldCollapseMessageContent(message.content)
+  const contentExpanded = message.contentExpanded !== false
   return (
     <article className={`agent-message ${message.role}`}>
       {message.role === "tool" && <Wrench size={14} />}
-      <span>{message.content || (message.isLoading ? props.t.agentThinking : "")}</span>
+      <span className={`agent-message-content ${canCollapseContent && !contentExpanded ? "collapsed" : ""}`}>
+        {message.content || (message.isLoading ? props.t.agentThinking : "")}
+      </span>
+      {hasContent && canCollapseContent && (
+        <button
+          type="button"
+          className="agent-message-toggle"
+          aria-expanded={contentExpanded}
+          onClick={props.onToggleContent}
+        >
+          {contentExpanded ? props.t.agentCollapseContent : props.t.agentExpandContent}
+        </button>
+      )}
       {message.isLoading && <Loader2 size={14} className="spin-icon" />}
       {message.thinking && (
         <div className="agent-thinking">
@@ -712,7 +1052,6 @@ function AgentPlanCard(props: {
   isSubmitting: boolean
   safeSubject: boolean
   onAcceptWarnings: (value: boolean) => void
-  onApply: () => void
   onExport: () => void
   onSubmit: () => void
 }) {
@@ -722,7 +1061,7 @@ function AgentPlanCard(props: {
       <div className="agent-plan-title">
         <CheckCircle2 size={18} />
         <span>
-          <strong>{props.t.agentParsedIntent}</strong>
+          <strong>{props.executablePlan ? props.t.agentActionReadyTitle : props.t.agentActionDraftTitle}</strong>
           <small>{intentLabel}</small>
         </span>
       </div>
@@ -744,7 +1083,7 @@ function AgentPlanCard(props: {
         </div>
       )}
       <div className="agent-phase-list">
-        <strong>{props.t.agentPlanPhases}</strong>
+        <strong>{props.t.agentActionSteps}</strong>
         {props.draft.phases.map((phase) => (
           <div className="agent-phase" key={phase.id}>
             <span>{phase.title}</span>
@@ -758,6 +1097,12 @@ function AgentPlanCard(props: {
           {props.executablePlan.txs.map((tx) => (
             <span key={`${tx.to}-${tx.data}`}>{translateTxLabel(tx.label, props.t)}</span>
           ))}
+          {props.executablePlan.simulation?.status === "failed" && (
+            <p className="agent-simulation-error">
+              <AlertTriangle size={14} />
+              {props.executablePlan.simulation.message}
+            </p>
+          )}
           <small>{props.t.agentWalletConfirmations}</small>
         </div>
       )}
@@ -776,13 +1121,6 @@ function AgentPlanCard(props: {
         {props.t.agentReviewReminder}
       </p>
       <div className="agent-plan-actions">
-        <button type="button" className="soft-button" disabled={!props.canUsePlan} onClick={props.onApply}>
-          {props.t.applyAgentPlan}
-        </button>
-        <button type="button" className="soft-button" disabled={!props.canUsePlan} onClick={props.onExport}>
-          <Download size={15} />
-          {props.t.exportSafePayload}
-        </button>
         <button
           type="button"
           className="primary-button"
@@ -793,7 +1131,8 @@ function AgentPlanCard(props: {
             ? props.t.submitting
             : props.safeSubject
               ? props.t.exportSafePayload
-              : props.t.agentOpenWallet}
+              : props.t.agentConfirmAction}
+          {!props.isSubmitting && !props.safeSubject && <Play size={14} />}
         </button>
       </div>
     </article>
@@ -825,8 +1164,26 @@ function createMessage(role: AgentChatMessage["role"], content: string, isLoadin
   return { id: createId(), role, content, isLoading }
 }
 
+function loadStoredSessions(fallbackTitle: string): AgentSession[] {
+  if (typeof window === "undefined") return [createSession(fallbackTitle)]
+  return readStoredAgentSessions(window.localStorage.getItem(agentSessionsStorageKey), fallbackTitle) as AgentSession[]
+}
+
+function loadStoredActiveSessionId(sessions: AgentSession[]): string {
+  if (typeof window !== "undefined") {
+    const stored = window.localStorage.getItem(agentActiveSessionStorageKey)
+    if (stored && sessions.some((session) => session.id === stored)) return stored
+  }
+  return sessions[0]?.id ?? createId()
+}
+
 function createId() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+}
+
+function shouldCollapseMessageContent(content: string) {
+  if (!content.trim()) return false
+  return content.split(/\r?\n/).length > 4 || content.length > 220
 }
 
 function collectWarnings(draft: AgentPlan | null, plan: TxPlan | null) {
@@ -876,11 +1233,11 @@ function joinPendingIntent(pending: string, input: string) {
 }
 
 function shouldStartNewIntent(input: string) {
-  return /\b(claim|stake|unstake|move|rebalance)\b|领取|质押|提款|调仓|移动/.test(input.toLowerCase())
+  return /\b(claim|stake|unstake|restake|move|rebalance)\b|领取|质押|复投|提款|调仓|移动/.test(input.toLowerCase())
 }
 
 function agentAccessKey(context: AgentContext) {
-  if (!context.account || !(context.subjectAccount ?? context.account) || !context.liveSnapshot) return "locked"
+  if (!context.account || !context.subjectAccount || !context.liveSnapshot) return "locked"
   return context.summary.safeBalance > 0n || context.summary.totalStaked > 0n ? "eligible" : "empty"
 }
 
@@ -912,9 +1269,90 @@ function agentContextKey(context: AgentContext) {
 
 function localizeClarification(question: string, t: MessageBundle) {
   if (question === "Which validator should receive this stake?") return t.agentClarifyStakeValidator
+  if (question === "Which validator should receive restaked rewards?") return t.agentClarifyRestakeValidator
   if (question === "Which amount and validator should be staked?") return t.agentClarifyStake
   if (question === "Which validator should be unstaked?") return t.agentClarifyUnstakeValidator
   if (question === "Which amount and validator should be unstaked?") return t.agentClarifyUnstake
   if (question === "Which amount and validators should be used for the rebalance?") return t.agentClarifyRebalance
   return t.agentClarifyGeneral
+}
+
+function readPreparedIntent(toolName: string, data: unknown): AgentIntent | null {
+  if (toolName !== "prepare_staking_action") return null
+  const record = readRecord(data) as PreparedStakingActionData | null
+  if (record?.requiresWalletConfirmation !== true) return null
+  return coerceAgentIntent(record?.intent)
+}
+
+function coerceAgentIntent(input: unknown): AgentIntent | null {
+  const record = readRecord(input)
+  const kind = typeof record?.kind === "string" ? record.kind : ""
+  if (kind === "claim-withdrawal") return { kind }
+  if (kind === "claim-rewards") return { kind }
+  if (kind === "stake" || kind === "unstake") {
+    const amount = coerceAgentAmount(record?.amount)
+    const validator = coerceAgentValidator(record?.validator)
+    return amount && validator ? { kind, amount, validator } : null
+  }
+  if (kind === "restake-rewards") {
+    const amount = coerceAgentAmount(record?.amount)
+    const validator = coerceAgentValidator(record?.validator)
+    return amount && validator ? { kind, amount, validator } : null
+  }
+  if (kind === "rebalance") {
+    const amount = coerceAgentAmount(record?.amount)
+    const from = coerceAgentValidator(record?.from)
+    const to = coerceAgentValidator(record?.to)
+    return amount && from && to ? { kind, amount, from, to } : null
+  }
+  return null
+}
+
+function coerceAgentAmount(input: unknown): AgentAmount | null {
+  const record = readRecord(input)
+  const type = typeof record?.type === "string" ? record.type : ""
+  if (type === "safe") {
+    const value = typeof record?.value === "string" ? record.value.trim() : ""
+    return /^\d+(?:\.\d{1,18})?$/.test(value) ? { type, value } : null
+  }
+  if (type === "percent-wallet" || type === "percent-validator-stake") {
+    const value = typeof record?.value === "number" ? record.value : Number(record?.value)
+    return Number.isFinite(value) && value > 0 && value <= 100 ? { type, value } : null
+  }
+  if (type === "all-wallet" || type === "all-validator-stake" || type === "all-claimable-rewards") {
+    return { type }
+  }
+  return null
+}
+
+function coerceAgentValidator(input: unknown): AgentValidatorRef | null {
+  const record = readRecord(input)
+  const type = typeof record?.type === "string" ? record.type : ""
+  if (type === "best-active") {
+    return { type }
+  }
+  const value = typeof record?.value === "string" ? record.value.trim() : ""
+  if (type === "label" && value) {
+    return { type, value }
+  }
+  if (type === "address" && isAddress(value)) {
+    return { type, value: value as Address }
+  }
+  return null
+}
+
+function readRecord(input: unknown): Record<string, unknown> | null {
+  return typeof input === "object" && input !== null ? (input as Record<string, unknown>) : null
+}
+
+function isConfirmationText(input: string) {
+  return /^(continue|confirm|yes|go ahead|execute|submit|ok|okay|继续|确认|确定|执行|提交|可以|好的|开始)$/i.test(
+    input.trim(),
+  )
+}
+
+function resolvePlanNotReadyMessage(t: MessageBundle, warnings: string[], plan: TxPlan | null) {
+  if (plan?.simulation?.status === "failed") return t.agentPlanSimulationFailed
+  if (warnings.length > 0) return t.agentConfirmWarningsRequired
+  return t.agentActionNotReady
 }

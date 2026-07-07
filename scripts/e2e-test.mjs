@@ -365,8 +365,11 @@ try {
       connectAuthCalls += 1
       route.fulfill({ status: 500, body: "Connect wallet must not call auth APIs" })
     })
+    const connectLiveUrls = []
     await connectPage.route("**/api/account/live?**", async (route) => {
       connectAccountLiveCalls += 1
+      connectLiveUrls.push(route.request().url())
+      const isManualRefresh = new URL(route.request().url()).searchParams.get("refresh") === "true"
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -380,7 +383,7 @@ try {
             cumulativeClaimed: "0",
             nextClaimableWithdrawal: { amount: "0", claimableAt: "0" },
             pendingWithdrawals: [],
-            safeBalance: "5000000000000000000",
+            safeBalance: isManualRefresh ? "7000000000000000000" : "5000000000000000000",
             stakingAllowance: "0",
             totalStaked: "0",
             withdrawDelay: "604800",
@@ -418,6 +421,8 @@ try {
     await connectPage.goto(baseUrl, { waitUntil: "networkidle" })
     await connectPage.getByRole("button", { name: "Connect wallet" }).first().click()
     await connectPage.waitForFunction(() => document.body.innerText.includes("SAFE Balance\n5.00"))
+    await connectPage.getByRole("button", { name: "Refresh SAFE balance and stake" }).click()
+    await connectPage.waitForFunction(() => document.body.innerText.includes("SAFE Balance\n7.00"))
     const walletCalls = await connectPage.evaluate(() => window.__walletCalls)
     if (walletCalls.requestAccounts !== 1) {
       throw new Error(`Expected one wallet account request, got ${walletCalls.requestAccounts}`)
@@ -427,7 +432,16 @@ try {
     }
     if (connectAuthCalls !== 0)
       throw new Error(`Expected connect wallet not to call auth APIs, got ${connectAuthCalls}`)
-    if (connectAccountLiveCalls === 0) throw new Error("Expected connect wallet to load read-only account live data")
+    if (connectAccountLiveCalls < 2) {
+      throw new Error(
+        `Expected connect wallet and manual refresh to load account live data, got ${connectAccountLiveCalls}`,
+      )
+    }
+    if (!connectLiveUrls.some((url) => new URL(url).searchParams.get("refresh") === "true")) {
+      throw new Error(
+        `Expected manual refresh to call account live API with refresh=true, got ${connectLiveUrls.join("\n")}`,
+      )
+    }
     if (connectErrors.length > 0) {
       throw new Error(`Unexpected connect wallet page errors: ${connectErrors.join("\n")}`)
     }
@@ -683,8 +697,12 @@ try {
   await dialog.getByRole("button", { name: "Agent sessions" }).click()
   await dialog.getByRole("menuitem", { name: "New session" }).waitFor()
   await dialog.getByRole("menuitem", { name: "Clear session" }).waitFor()
+  await dialog.getByRole("menuitem", { name: "Clear all sessions" }).waitFor()
   await page.keyboard.press("Escape")
+  await dialog.getByRole("menuitem", { name: "New session" }).waitFor({ state: "hidden" })
   await page.keyboard.press("Escape")
+  await dialog.waitFor({ state: "visible" })
+  await dialog.getByRole("button", { name: "Close agent" }).click()
   await dialog.waitFor({ state: "hidden" })
   await page.getByRole("button", { name: "Switch language" }).click()
   await page.getByRole("menuitemradio", { name: /Deutsch/ }).waitFor()
@@ -698,6 +716,8 @@ try {
   await localizedDialog.getByText("告诉我你想如何处理 SAFE 质押仓位。").waitFor()
   await localizedDialog.getByText("连接钱包后开始对话").waitFor()
   await page.keyboard.press("Escape")
+  await localizedDialog.waitFor({ state: "visible" })
+  await localizedDialog.getByRole("button", { name: "关闭 Agent" }).click()
   await localizedDialog.waitFor({ state: "hidden" })
   await page.getByRole("button", { name: "切换语言" }).click()
   await page.getByRole("menuitemradio", { name: /English/ }).click()
@@ -707,6 +727,51 @@ try {
   if (messageLogRole !== "log") throw new Error("Expected agent messages to render in an accessible log")
   if ((await dialog.getByText("Wallet context changed. I cleared the pending Agent plan.").count()) > 0) {
     throw new Error("Expected wallet context changes to stay silent until the user asks the Agent something")
+  }
+  await page.evaluate(() => {
+    window.localStorage.setItem(
+      "safecafe:agent:sessions",
+      JSON.stringify([
+        {
+          draft: null,
+          draftKey: "",
+          executablePlan: null,
+          id: "persisted-agent-session",
+          messages: [
+            {
+              content:
+                "Line one of a deliberately long persisted Agent answer. " +
+                "Line two keeps going with enough detail to exceed the compact message threshold. " +
+                "Line three keeps going with more persisted context for the Agent conversation. " +
+                "Line four keeps going so the user can expand it. " +
+                "Line four and a half adds enough extra persisted text for the compact message threshold. " +
+                "Line five should be collapsed until expanded.",
+              id: "persisted-message",
+              role: "assistant",
+            },
+          ],
+          pendingIntentText: "",
+          title: "Persisted Agent session",
+          warningsAccepted: false,
+        },
+      ]),
+    )
+    window.localStorage.setItem("safecafe:agent:active-session", "persisted-agent-session")
+  })
+  await page.reload({ waitUntil: "networkidle" })
+  await page.getByRole("button", { name: "Open Staking Agent" }).click()
+  const restoredDialog = page.getByRole("dialog", { name: "Staking Agent" })
+  await restoredDialog.waitFor({ state: "visible" })
+  await restoredDialog.getByText("Line one of a deliberately long persisted Agent answer.").waitFor()
+  await restoredDialog.getByText("Line five should be collapsed until expanded.").waitFor()
+  const contentToggle = restoredDialog.locator(".agent-message-toggle").first()
+  await contentToggle.waitFor()
+  if ((await contentToggle.getAttribute("aria-expanded")) !== "true") {
+    throw new Error("Expected long Agent content to be expanded by default")
+  }
+  await contentToggle.click()
+  if ((await contentToggle.getAttribute("aria-expanded")) !== "false") {
+    throw new Error("Expected long Agent content to collapse after clicking the content toggle")
   }
 
   let agentApiCalls = 0
@@ -739,7 +804,7 @@ try {
     throw new Error("Expected disconnected agent prompt chips to stay hidden after clearing a session")
   }
 
-  await page.keyboard.press("Escape")
+  await dialog.getByRole("button", { name: "Close agent" }).click()
   await dialog.waitFor({ state: "hidden" })
   if (!(await launcher.evaluate((element) => element === document.activeElement))) {
     throw new Error("Expected focus to return to the agent launcher after closing the dialog")
@@ -771,8 +836,11 @@ try {
   })
   if (!sessionPopoverOk) throw new Error("Expected agent session menu to stay inside the mobile viewport")
   await page.keyboard.press("Escape")
+  await dialog.locator(".agent-session-popover").waitFor({ state: "hidden" })
   await page.setViewportSize({ width: 390, height: 760 })
   await page.keyboard.press("Escape")
+  await dialog.waitFor({ state: "visible" })
+  await dialog.getByRole("button", { name: "Close agent" }).click()
   await dialog.waitFor({ state: "hidden" })
   const mobileBeforeDrag = await launcher.boundingBox()
   await launcher.dragTo(page.locator("body"), { targetPosition: { x: 180, y: 540 }, force: true })
@@ -803,10 +871,13 @@ try {
   await zhLauncher.click()
   const zhDialog = zhPage.getByRole("dialog", { name: "质押 Agent" })
   await zhDialog.waitFor({ state: "visible" })
-  await zhDialog.getByText("需要可执行计划时再连接钱包").waitFor()
-  await zhDialog.getByLabel("给质押 Agent 发消息").fill("每天自动复投奖励")
-  await zhDialog.getByRole("button", { name: "发送" }).click()
-  await zhDialog.getByText("不支持的指令。").waitFor()
+  await zhDialog.getByText("连接钱包后开始对话").waitFor()
+  if (!(await zhDialog.getByLabel("给质押 Agent 发消息").isDisabled())) {
+    throw new Error("Expected disconnected zh agent composer to be disabled")
+  }
+  if ((await zhDialog.getByRole("button", { name: "发送" }).count()) > 0) {
+    throw new Error("Expected disconnected zh agent send button to be replaced by wallet connect")
+  }
   if (zhConsoleErrors.length > 0) {
     throw new Error(`Unexpected zh browser console errors: ${zhConsoleErrors.join("\n")}`)
   }

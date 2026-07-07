@@ -9,6 +9,7 @@ import {
   handleRpcChallengeRequest,
   handleRpcVerifyRequest,
 } from "./src/server/rpcGateway"
+import { handleSafeDiscoveryRequest } from "./src/server/safeDiscovery"
 import { handleSafePriceRequest } from "./src/server/safePrice"
 
 loadEnv()
@@ -53,6 +54,7 @@ export default defineConfig({
         const env = {
           SAFECAFE_RPC_ALLOW_ALL_WALLETS: process.env.SAFECAFE_RPC_ALLOW_ALL_WALLETS,
           SAFECAFE_AUTH_SECRET: process.env.SAFECAFE_AUTH_SECRET,
+          SAFECAFE_AGENT_AUTH: process.env.SAFECAFE_AGENT_AUTH,
           SAFECAFE_MOCK_ACCOUNT: process.env.SAFECAFE_MOCK_ACCOUNT,
           SAFECAFE_MOCK_ACCOUNT_LIVE: process.env.SAFECAFE_MOCK_ACCOUNT_LIVE,
           SAFECAFE_RPC_URL: process.env.SAFECAFE_RPC_URL,
@@ -60,6 +62,9 @@ export default defineConfig({
           SAFECAFE_LLM_API_BASE: process.env.SAFECAFE_LLM_API_BASE,
           SAFECAFE_LLM_API_MODEL: process.env.SAFECAFE_LLM_API_MODEL,
           SAFECAFE_LLM_API_KEY: process.env.SAFECAFE_LLM_API_KEY,
+          SAFECAFE_LLM_TIMEOUT_MS: process.env.SAFECAFE_LLM_TIMEOUT_MS,
+          SAFECAFE_LLM_MAX_TOKENS: process.env.SAFECAFE_LLM_MAX_TOKENS,
+          VITE_AGENT_AUTH: process.env.VITE_AGENT_AUTH,
         }
         server.middlewares.use("/api/agent", async (req, res) => {
           await handleApi(req, res, "/api/agent", (request) => handleAgentApiRequest(request, env))
@@ -69,6 +74,9 @@ export default defineConfig({
         })
         server.middlewares.use("/api/price/safe", async (req, res) => {
           await handleApi(req, res, "/api/price/safe", handleSafePriceRequest)
+        })
+        server.middlewares.use("/api/safes", async (req, res) => {
+          await handleApi(req, res, "/api/safes", handleSafeDiscoveryRequest)
         })
         server.middlewares.use("/api/auth/challenge", async (req, res) => {
           await handleApi(req, res, "/api/auth/challenge", (request) => handleRpcChallengeRequest(request, env))

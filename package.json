@@ -29,8 +29,11 @@
     "format": "biome check --write .",
     "test:agent": "tsx scripts/agent-core-test.mjs",
     "test:e2e": "VITE_AGENT_LAUNCHER_DRAGGABLE=true VITE_RPC_URL=/api/rpc/ethereum pnpm build:web && node scripts/e2e-test.mjs",
-    "test:e2e:live-mock": "VITE_RPC_URL=/api/rpc/ethereum pnpm build:web && node scripts/e2e-live-mock-test.mjs",
+    "test:e2e:live-mock": "VITE_AGENT_LAUNCHER_DRAGGABLE=true VITE_RPC_URL=/api/rpc/ethereum pnpm build:web && node scripts/e2e-live-mock-test.mjs --server=wrangler",
+    "test:e2e:live-mock:dev": "VITE_AGENT_LAUNCHER_DRAGGABLE=true VITE_RPC_URL=/api/rpc/ethereum node scripts/e2e-live-mock-test.mjs --server=dev",
     "test:e2e:ui-sweep": "VITE_RPC_URL=/api/rpc/ethereum pnpm build:web && node scripts/e2e-ui-sweep.mjs",
+    "canary:web": "pnpm test:e2e:live-mock",
+    "canary:web:dev": "pnpm test:e2e:live-mock:dev",
     "test:mock-chain": "node scripts/e2e/mockChain-test.mjs",
     "test:integration": "pnpm build:cli && node scripts/integration-test.mjs",
     "test:system": "pnpm build && node scripts/system-test.mjs"
