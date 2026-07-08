@@ -89,7 +89,7 @@ export function StatusBadge({ status, t }: { status: string; t: MessageBundle })
 export function CustomSelect(props: {
   disabled?: boolean
   label: string
-  options: Array<{ value: string; label: string; detail?: string }>
+  options: Array<{ value: string; label: string; detail?: string; badge?: string }>
   value: string
   onChange: (value: string) => void
 }) {
@@ -151,7 +151,10 @@ export function CustomSelect(props: {
         onClick={() => setOpen((value) => !value)}
       >
         <span>
-          <strong>{selected?.label ?? props.label}</strong>
+          <strong>
+            <span className="custom-select-label-text">{selected?.label ?? props.label}</span>
+            {selected?.badge && <em className="custom-select-badge">{selected.badge}</em>}
+          </strong>
           {selected?.detail && <small>{selected.detail}</small>}
         </span>
         <ChevronDown size={18} />
@@ -184,7 +187,10 @@ export function CustomSelect(props: {
                 }}
               >
                 <span>
-                  <strong>{option.label}</strong>
+                  <strong>
+                    <span className="custom-select-label-text">{option.label}</span>
+                    {option.badge && <em className="custom-select-badge">{option.badge}</em>}
+                  </strong>
                   {option.detail && <small>{option.detail}</small>}
                 </span>
                 {option.value === props.value && <Check size={16} />}
@@ -267,7 +273,9 @@ export function Tooltip({
         if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) return
         hide()
       }}
-      onFocusCapture={show}
+      onFocusCapture={(event) => {
+        if (event.target instanceof HTMLElement && event.target.matches(":focus-visible")) show()
+      }}
       onKeyDown={(event) => {
         if (event.key === "Escape") hide()
       }}

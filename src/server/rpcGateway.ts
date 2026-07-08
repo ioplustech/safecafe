@@ -1,4 +1,5 @@
-import { hashMessage, isAddress } from "viem"
+import { decodeFunctionData, hashMessage, isAddress } from "viem"
+import { safeAccountAbi } from "../protocol/abi"
 import { CHAIN_ID, CONTRACTS } from "../protocol/contracts"
 import { rpcStrategy, verifyRpcAccess } from "./accessStrategy"
 import {
@@ -38,10 +39,16 @@ type JsonErrorDetails = {
 
 const maxBodyBytes = 32_000
 const allowedCallTargets = new Set<string>(
-  [CONTRACTS.safeToken, CONTRACTS.staking, CONTRACTS.merkleDrop, CONTRACTS.multicall3].map((address) =>
-    address.toLowerCase(),
-  ),
+  [CONTRACTS.safeToken, CONTRACTS.staking, CONTRACTS.merkleDrop].map((address) => address.toLowerCase()),
 )
+const allowedSafeSubjectCallSelectors = new Set([
+  "0xa0e67e2b", // getOwners()
+  "0xe75235b8", // getThreshold()
+  "0x2f54bf6e", // isOwner(address)
+  "0xaffed0e0", // nonce()
+  "0xd8d11f78", // getTransactionHash(...)
+])
+const safeExecTransactionSelector = "0x6a761202"
 
 export async function handleRpcChallengeRequest(request: Request, env: RpcGatewayEnv): Promise<Response> {
   const context = createRequestContext(request, "auth.challenge")
@@ -207,19 +214,19 @@ export async function handleEthereumRpcGatewayRequest(request: Request, env: Rpc
     if (body.value.length > 20) {
       return jsonRpcHttpError(context, null, -32600, "Batch request is too large.", 413, "batch_too_large")
     }
-    const results = await Promise.all(body.value.map((item) => handleRpcItem(item, env, context)))
+    const results = await Promise.all(body.value.map((item) => handleRpcItem(item, env, context, session)))
     return json(results, 200, "no-store", context)
   }
-  return json(await handleRpcItem(body.value, env, context), 200, "no-store", context)
+  return json(await handleRpcItem(body.value, env, context, session), 200, "no-store", context)
 }
 
-async function handleRpcItem(input: unknown, env: RpcGatewayEnv, context: RequestContext) {
+async function handleRpcItem(input: unknown, env: RpcGatewayEnv, context: RequestContext, session: SessionPayload) {
   const request = input as JsonRpcRequest
   const id = isJsonRpcId(request?.id) ? request.id : null
   if (request?.jsonrpc !== "2.0" || typeof request.method !== "string") {
     return jsonRpcError(context, id, -32600, "Invalid JSON-RPC request.", "invalid_json_rpc_request")
   }
-  const blocked = validateRpcRequest(request)
+  const blocked = validateRpcRequest(request, session)
   if (blocked) {
     logServerEvent(context, "warn", "rpc.request.blocked", {
       jsonRpcCode: blocked.code,
@@ -240,7 +247,10 @@ async function handleRpcItem(input: unknown, env: RpcGatewayEnv, context: Reques
   return upstream.value
 }
 
-function validateRpcRequest(request: JsonRpcRequest): { code: number; message: string; reason: string } | null {
+function validateRpcRequest(
+  request: JsonRpcRequest,
+  session: SessionPayload,
+): { code: number; message: string; reason: string } | null {
   const method = request.method
   if (method === "eth_chainId" || method === "eth_blockNumber") return null
   if (
@@ -261,13 +271,41 @@ function validateRpcRequest(request: JsonRpcRequest): { code: number; message: s
   if (!call || typeof call.to !== "string" || !isAddress(call.to)) {
     return { code: -32602, message: "eth_call target is required.", reason: "invalid_eth_call_target" }
   }
-  if (!allowedCallTargets.has(call.to.toLowerCase())) {
+  if (!isAllowedCallTarget(call, session)) {
     return { code: -32602, message: "eth_call target is not allowed.", reason: "eth_call_target_not_allowed" }
   }
   if (typeof call.data === "string" && call.data.length > 20_000) {
     return { code: -32602, message: "eth_call data is too large.", reason: "eth_call_data_too_large" }
   }
   return null
+}
+
+function isAllowedCallTarget(call: { to?: unknown; data?: unknown }, session: SessionPayload) {
+  const target = typeof call.to === "string" ? call.to.toLowerCase() : ""
+  if (allowedCallTargets.has(target)) return true
+  if (target !== session.subject.toLowerCase()) return false
+  const selector = typeof call.data === "string" ? call.data.slice(0, 10).toLowerCase() : ""
+  if (selector === safeExecTransactionSelector) return isAllowedSafeExecCall(call.data)
+  return allowedSafeSubjectCallSelectors.has(selector)
+}
+
+function isAllowedSafeExecCall(data: unknown) {
+  if (typeof data !== "string") return false
+  try {
+    const decoded = decodeFunctionData({
+      abi: safeAccountAbi,
+      data: data as `0x${string}`,
+    })
+    if (decoded.functionName !== "execTransaction") return false
+    const [to, value, nestedData, operation] = decoded.args
+    if (operation !== 0) return false
+    if (value !== 0n) return false
+    if (!isAddress(to)) return false
+    if (typeof nestedData !== "string" || nestedData.length > 20_000) return false
+    return allowedCallTargets.has(to.toLowerCase())
+  } catch {
+    return false
+  }
 }
 
 async function readJsonBody(

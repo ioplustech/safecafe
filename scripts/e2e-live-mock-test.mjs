@@ -52,7 +52,7 @@ try {
   await runScenario("staking agent restake action card", () => runAgentRestakeActionFlow(page, driver, chain))
   await runScenario("unstake max precision and withdrawal claim", () => runUnstakeMaxPrecisionFlow(driver, chain))
   await runScenario("stake with internal RPC simulation", () => runStakeFlow(driver))
-  await runScenario("unstake with internal RPC simulation", () => runUnstakeFlow(driver))
+  await runScenario("unstake with internal RPC simulation", () => runUnstakeFlow(driver, chain))
   await runScenario("claim pending withdrawal", () => runClaimWithdrawalFlow(driver))
   await runScenario("claim rewards from tab button", () => runClaimRewardsFlow(driver))
   await runScenario("claim rewards and stake feature", () => runClaimRewardsAndStakeFlow(driver, chain))
@@ -157,11 +157,14 @@ async function runStakeFlow(driver) {
   await driver.expectLastTxSequence(["approve", "stake"])
 }
 
-async function runUnstakeFlow(driver) {
+async function runUnstakeFlow(driver, chain) {
   await driver.unstake({ amount: "5" })
   await driver.expectValidatorStake({ amount: "5" })
   await driver.expectPendingWithdrawal("5")
-  await driver.expectSummary({ claimableWithdrawals: "5.00 SAFE", totalStaked: "5.00" })
+  await driver.expectSummary({
+    claimableWithdrawals: "5.00 SAFE",
+    totalStaked: formatSafeAmountForSummary(totalStaked(chain)),
+  })
 }
 
 async function runClaimWithdrawalFlow(driver) {
@@ -233,11 +236,14 @@ async function runAgentRestakeActionFlow(page, driver, chain) {
   await page.getByRole("button", { name: "Open Staking Agent" }).click()
   const dialog = page.getByRole("dialog", { name: "Staking Agent" })
   await dialog.waitFor({ state: "visible" })
-  await dialog.getByLabel("Message the staking agent").fill("restake rewards to Core Contributors")
+  await dialog.getByLabel("Message the staking agent").fill("复投")
+  await dialog.getByRole("button", { name: "Send" }).click()
+  await waitForDialogText(dialog, "Which validator should receive the restaked rewards?")
+  await dialog.getByLabel("Message the staking agent").fill("全部复投到 Gnosis")
   await dialog.getByRole("button", { name: "Send" }).click()
   await waitForDialogText(dialog, "Ready to review")
   await waitForDialogText(dialog, "Claim staking rewards")
-  await waitForDialogText(dialog, "Restake 2.5 SAFE to Core Contributors")
+  await waitForDialogText(dialog, "Restake 2.5 SAFE to Gnosis")
   await dialog.getByLabel("I reviewed the warnings and transaction order.").check()
   const confirmButton = dialog.getByRole("button", { name: "Open wallet to confirm" })
   await confirmButton.waitFor()
@@ -250,7 +256,8 @@ async function runAgentRestakeActionFlow(page, driver, chain) {
       )}`,
     )
   }
-  await confirmButton.click()
+  await dialog.getByLabel("Message the staking agent").fill("继续")
+  await dialog.getByRole("button", { name: "Send" }).click()
   try {
     await driver.expectLastTxSequence(["claimRewards", "approve", "stake"])
   } catch (error) {

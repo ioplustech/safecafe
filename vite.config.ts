@@ -76,7 +76,7 @@ export default defineConfig({
           await handleApi(req, res, "/api/price/safe", handleSafePriceRequest)
         })
         server.middlewares.use("/api/safes", async (req, res) => {
-          await handleApi(req, res, "/api/safes", handleSafeDiscoveryRequest)
+          await handleApi(req, res, "/api/safes", (request) => handleSafeDiscoveryRequest(request, env))
         })
         server.middlewares.use("/api/auth/challenge", async (req, res) => {
           await handleApi(req, res, "/api/auth/challenge", (request) => handleRpcChallengeRequest(request, env))

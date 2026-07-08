@@ -1,12 +1,13 @@
 import { type Address, isAddress } from "viem"
 import type { ValidatorInfo } from "../protocol"
+import { generalAgentQuestion } from "./routing"
 import type { AgentAmount, AgentParseResult, AgentValidatorRef } from "./types"
 
 export function parseAgentInstruction(input: string, validators: ValidatorInfo[]): AgentParseResult {
   const original = input.trim()
   const text = original.toLowerCase().replace(/\s+/g, " ")
   if (!text) {
-    return { status: "needs-clarification", question: "What staking action should the Agent draft?", risks: [] }
+    return { status: "needs-clarification", question: "What staking action should the Agent prepare?", risks: [] }
   }
   const unsafeExecutionRisk = parseUnsafeExecutionRisk(text)
   if (unsafeExecutionRisk) {
@@ -85,7 +86,7 @@ export function parseAgentInstruction(input: string, validators: ValidatorInfo[]
   }
   return {
     status: "needs-clarification",
-    question: "I can draft stake, unstake, claim, restake, and rebalance plans. Which one do you want?",
+    question: generalAgentQuestion,
     risks: [],
   }
 }
@@ -101,7 +102,7 @@ function parseUnsafeExecutionRisk(text: string) {
     return {
       severity: "blocked" as const,
       code: "scheduled-execution-not-supported",
-      message: "The Agent can draft SAFE staking actions, but it cannot schedule or automatically execute them.",
+      message: "The Agent can prepare SAFE staking actions, but it cannot schedule or automatically execute them.",
     }
   }
   if (/\b(submit|sign|approve|confirm)\s+for\s+me\b|帮我(提交|签名|授权|确认)|替我(提交|签名|授权|确认)/.test(text)) {

@@ -4,9 +4,9 @@ import type { TxPlan } from "../protocol"
 import { AgentChatDialog } from "./AgentChatDialog"
 import { AgentLogo } from "./AgentLogo"
 import type { MessageBundle } from "./i18n"
+import { appStorageKeys, readStorageJson, writeStorageJson } from "./persistence"
 import { Tooltip } from "./ui"
 
-const storageKey = "safecafe:agent-launcher-position"
 const launcherSize = 56
 const edge = 24
 const dialogExitMs = 180
@@ -19,15 +19,15 @@ export type AgentLauncherProps = {
   rpcAuthToken: string | null
   onAuthenticateAgent: () => Promise<string | null>
   onConnectWallet: () => Promise<void>
-  onExportPlan: (plan: TxPlan) => void
   onOpen?: () => void
+  onRefreshLiveData: () => Promise<AgentContext | null>
   onSimulatePlan: (plan: TxPlan) => Promise<TxPlan>
   onSubmitPlan: (plan: TxPlan) => Promise<void>
 }
 
 export function AgentLauncher(props: AgentLauncherProps) {
   const [isOpen, setIsOpen] = useState(false)
-  const [shouldRenderDialog, setShouldRenderDialog] = useState(false)
+  const [hasOpenedDialog, setHasOpenedDialog] = useState(false)
   const [position, setPosition] = useState(() => readPosition())
   const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && window.innerWidth < 720)
   const wasOpenRef = useRef(false)
@@ -45,7 +45,7 @@ export function AgentLauncher(props: AgentLauncherProps) {
     const clamped = clampPosition(next)
     setPosition(clamped)
     if (persist) {
-      window.localStorage.setItem(storageKey, JSON.stringify(clamped))
+      writeStorageJson(appStorageKeys.agentLauncherPosition, clamped)
     }
   }, [])
 
@@ -65,16 +65,14 @@ export function AgentLauncher(props: AgentLauncherProps) {
   useEffect(() => {
     if (isOpen) {
       wasOpenRef.current = true
-      setShouldRenderDialog(true)
+      setHasOpenedDialog(true)
       return
     }
-    if (!shouldRenderDialog) return
     const timer = window.setTimeout(() => {
-      setShouldRenderDialog(false)
       if (wasOpenRef.current) buttonRef.current?.focus()
     }, dialogExitMs)
     return () => window.clearTimeout(timer)
-  }, [isOpen, shouldRenderDialog])
+  }, [isOpen])
 
   useEffect(() => {
     if (isOpen) props.onOpen?.()
@@ -142,10 +140,10 @@ export function AgentLauncher(props: AgentLauncherProps) {
           <span className="agent-launcher-dot" />
         </button>
       </Tooltip>
-      {shouldRenderDialog && (
+      {hasOpenedDialog && (
         <AgentChatDialog
           t={props.t}
-          isOpen={shouldRenderDialog}
+          isOpen={isOpen}
           isClosing={!isOpen}
           anchor={isMobile ? null : position}
           context={props.context}
@@ -154,7 +152,7 @@ export function AgentLauncher(props: AgentLauncherProps) {
           onAuthenticateAgent={props.onAuthenticateAgent}
           onClose={() => setIsOpen(false)}
           onConnectWallet={props.onConnectWallet}
-          onExportPlan={props.onExportPlan}
+          onRefreshLiveData={props.onRefreshLiveData}
           onSimulatePlan={props.onSimulatePlan}
           onSubmitPlan={props.onSubmitPlan}
         />
@@ -165,15 +163,16 @@ export function AgentLauncher(props: AgentLauncherProps) {
 
 function readPosition() {
   if (typeof window === "undefined") return defaultPosition()
-  const raw = window.localStorage.getItem(storageKey)
-  if (!raw) return defaultPosition()
-  try {
-    const parsed = JSON.parse(raw) as { x?: unknown; y?: unknown }
-    if (typeof parsed.x === "number" && typeof parsed.y === "number") return clampPosition({ x: parsed.x, y: parsed.y })
-  } catch {
-    return defaultPosition()
-  }
-  return defaultPosition()
+  return (
+    readStorageJson(appStorageKeys.agentLauncherPosition, (parsed) => {
+      if (!parsed || typeof parsed !== "object") return null
+      const record = parsed as { x?: unknown; y?: unknown }
+      if (typeof record.x === "number" && typeof record.y === "number") {
+        return clampPosition({ x: record.x, y: record.y })
+      }
+      return null
+    }) ?? defaultPosition()
+  )
 }
 
 function defaultPosition() {

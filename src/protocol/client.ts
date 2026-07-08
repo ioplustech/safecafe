@@ -9,9 +9,12 @@ export type SafenetPublicClientOptions = {
 
 export function createSafenetPublicClient(options?: SafenetPublicClientOptions | string): PublicClient {
   const normalized = typeof options === "string" ? { rpcUrl: options } : (options ?? {})
-  const gatewayTransport = normalized.authToken
+  const useGateway = normalized.authToken || (normalized.rpcUrl && isSafecafeRpcGatewayUrl(normalized.rpcUrl))
+  const gatewayTransport = useGateway
     ? http("/api/rpc/ethereum", {
-        fetchOptions: { headers: { authorization: `Bearer ${normalized.authToken}` } },
+        fetchOptions: normalized.authToken
+          ? { headers: { authorization: `Bearer ${normalized.authToken}` } }
+          : undefined,
       })
     : null
   const publicRpcUrl = normalized.rpcUrl && !isSafecafeRpcGatewayUrl(normalized.rpcUrl) ? normalized.rpcUrl : undefined

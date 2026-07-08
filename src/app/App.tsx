@@ -17,6 +17,7 @@ import { toast as sonnerToast, Toaster } from "sonner"
 import { type Address, createWalletClient, custom } from "viem"
 import {
   type AccountSnapshot,
+  buildSafeExecTransaction,
   CHAIN_ID,
   combineTxPlans,
   compactAddress,
@@ -31,6 +32,7 @@ import {
   planClaimWithdrawal,
   planStake,
   planUnstake,
+  resolveSafeExecutionMode,
   SAFE_PRICE_CACHE_MS,
   type TxPlan,
   toSafeTransactionPayload,
@@ -43,12 +45,27 @@ import { AgentLauncher } from "./AgentLauncher"
 import { DetailModal } from "./DetailModal"
 import { readableSimulationError, safeParsedAmount, stringifyBigInts, translateTxLabel } from "./formatters"
 import { detectLocale, getMessages, isLocale, type Locale, localeOptions } from "./i18n"
+import {
+  appStorageKeys,
+  readStorageAddress,
+  readStorageEnum,
+  readStorageFlag,
+  readStorageText,
+  readStoredWalletSubject,
+  removeStorageValue,
+  writeStorageAddress,
+  writeStorageFlag,
+  writeStorageText,
+  writeStoredWalletSubject,
+} from "./persistence"
 import { readCachedSafePrice, writeCachedSafePrice } from "./priceCache"
 import { clearRpcSession, ensureRpcSession, readRpcSession } from "./rpcAuth"
 import { fetchSafeUsdPrice } from "./safePriceApi"
 import {
+  type AccountSummary,
   type Action,
   type DataStatus,
+  type DiscoveredSafe,
   defaultValidator,
   emptySummary,
   type Modal,
@@ -107,23 +124,35 @@ function isLegacyActionPath(pathname: string) {
   const normalized = pathname.replace(/\/+$/, "") || "/"
   return normalized === "/stake" || normalized === "/unstake"
 }
-const walletDisconnectKey = "safecafe:wallet-disconnected"
 const defaultToastDurationMs = 3600
+const dashboardActionOptions = ["stake", "unstake", "claim-rewards"] as const satisfies readonly DashboardAction[]
+const validatorSortOptions = [
+  "stake",
+  "participation",
+  "commission",
+  "name",
+  "yourStake",
+] as const satisfies readonly ValidatorSort[]
 const toastDurationMs = readToastDurationMs(import.meta.env.VITE_TOAST_DURATION_MS)
 const mockRewardProofEnabled = import.meta.env.VITE_MOCK_REWARD_PROOF === "true"
 const mockRewardMerkleRoot = `0x${"11".repeat(32)}` as const
 type ToastTone = "success" | "warning" | "info"
-const navMeta: Record<NavItem, { label: string; icon: typeof Home }> = {
-  dashboard: { label: "Dashboard", icon: Home },
-  withdrawals: { label: "Withdrawals", icon: ArrowDownToLine },
-  rewards: { label: "Rewards", icon: Gift },
-  validators: { label: "Validators", icon: Users },
-  settings: { label: "Settings", icon: Settings },
+const navMeta: Record<NavItem, { icon: typeof Home }> = {
+  dashboard: { icon: Home },
+  withdrawals: { icon: ArrowDownToLine },
+  rewards: { icon: Gift },
+  validators: { icon: Users },
+  settings: { icon: Settings },
+}
+
+function initialDashboardAction(pathname: string): DashboardAction {
+  if (isLegacyActionPath(pathname)) return dashboardActionFromPath(pathname)
+  return readStorageEnum(appStorageKeys.dashboardAction, dashboardActionOptions, "stake")
 }
 
 export function App() {
   const [locale, setLocale] = useState<Locale>(() => {
-    const saved = window.localStorage.getItem("safecafe:locale")
+    const saved = readStorageText(appStorageKeys.locale)
     if (isLocale(saved)) return saved
     return detectLocale(navigator.language)
   })
@@ -132,17 +161,21 @@ export function App() {
   const [isLanguageMenuOpen, setIsLanguageMenuOpen] = useState(false)
   const [account, setAccount] = useState<Address | null>(null)
   const [stakingAccount, setStakingAccount] = useState<Address | null>(null)
-  const [action, setAction] = useState<Action>(() => actionFromPath(window.location.pathname))
+  const [action, setAction] = useState<Action>(() => initialDashboardAction(window.location.pathname))
   const [dashboardAction, setDashboardAction] = useState<DashboardAction>(() =>
-    dashboardActionFromPath(window.location.pathname),
+    initialDashboardAction(window.location.pathname),
   )
-  const [validator, setValidator] = useState<Address>(defaultValidator.address)
+  const [validator, setValidator] = useState<Address>(
+    () => readStorageAddress(appStorageKeys.selectedValidator) ?? defaultValidator.address,
+  )
   const [amount, setAmount] = useState("")
   const [txPlan, setTxPlan] = useState<TxPlan | null>(null)
   const [modal, setModal] = useState<Modal>(null)
-  const [showOnlyActive, setShowOnlyActive] = useState(false)
-  const [validatorQuery, setValidatorQuery] = useState("")
-  const [validatorSort, setValidatorSort] = useState<ValidatorSort>("stake")
+  const [showOnlyActive, setShowOnlyActive] = useState(() => readStorageFlag(appStorageKeys.validatorsActiveOnly))
+  const [validatorQuery, setValidatorQuery] = useState(() => readStorageText(appStorageKeys.validatorQuery) ?? "")
+  const [validatorSort, setValidatorSort] = useState<ValidatorSort>(() =>
+    readStorageEnum(appStorageKeys.validatorSort, validatorSortOptions, "stake"),
+  )
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [submittingAction, setSubmittingAction] = useState<SubmittingAction>(null)
   const [liveSnapshot, setLiveSnapshot] = useState<AccountSnapshot | null>(null)
@@ -161,7 +194,7 @@ export function App() {
   const [txProgress, setTxProgress] = useState("")
   const [validatorStakeError, setValidatorStakeError] = useState("")
   const [safePrice, setSafePrice] = useState<SafePriceState>(() => readCachedSafePrice())
-  const [discoveredSafes, setDiscoveredSafes] = useState<Address[]>([])
+  const [discoveredSafes, setDiscoveredSafes] = useState<DiscoveredSafe[]>([])
   const [safeDiscoveryStatus, setSafeDiscoveryStatus] = useState<"failed" | "idle" | "loading" | "ready">("idle")
   const [safeDiscoveryError, setSafeDiscoveryError] = useState("")
 
@@ -179,9 +212,12 @@ export function App() {
         ? t.walletConnecting
         : t.connectWallet
   const walletButtonStatus = account ? t.connected : walletBusy ? t.reading : t.notConnected
-  const languageButtonRef = useRef<HTMLButtonElement | null>(null)
-  const languageMenuRef = useRef<HTMLDivElement | null>(null)
+  const desktopLanguageButtonRef = useRef<HTMLButtonElement | null>(null)
+  const desktopLanguageMenuRef = useRef<HTMLDivElement | null>(null)
+  const mobileLanguageButtonRef = useRef<HTMLButtonElement | null>(null)
+  const mobileLanguageMenuRef = useRef<HTMLDivElement | null>(null)
   const liveReadRequestId = useRef(0)
+  const safeMetadataLookupRef = useRef(new Set<string>())
   const refreshLiveReadsRef = useRef<
     ((target?: Address | null, options?: { forceRefresh?: boolean }) => Promise<RefreshedLiveAccountData | null>) | null
   >(null)
@@ -257,6 +293,11 @@ export function App() {
   const displaySummary = hasLiveAccountData ? summary : emptySummary
   const displayValidators = visibleValidators
   const displaySafePriceUsd = safePrice.usd
+  const selectedSafeHasMetadata = useMemo(() => {
+    if (!stakingAccount || walletIdentity.subjectKind !== "safe") return false
+    const selectedSafe = discoveredSafes.find((safe) => isSameAddress(safe.address, stakingAccount))
+    return Boolean(selectedSafe && hasSafeMultisigMetadata(selectedSafe))
+  }, [discoveredSafes, stakingAccount, walletIdentity.subjectKind])
   const agentContext = useMemo(
     () => ({
       account,
@@ -301,18 +342,23 @@ export function App() {
     sonnerToast.info(content, options)
   }, [])
 
+  const updateDashboardAction = useCallback((nextAction: DashboardAction) => {
+    setDashboardAction(nextAction)
+    writeStorageText(appStorageKeys.dashboardAction, nextAction)
+  }, [])
+
   useEffect(() => {
     const handlePopState = () => {
       setActiveNav(navFromPath(window.location.pathname))
       if (isLegacyActionPath(window.location.pathname)) {
         const nextAction = actionFromPath(window.location.pathname)
         setAction(nextAction)
-        setDashboardAction(dashboardActionFromPath(window.location.pathname))
+        updateDashboardAction(dashboardActionFromPath(window.location.pathname))
       }
     }
     window.addEventListener("popstate", handlePopState)
     return () => window.removeEventListener("popstate", handlePopState)
-  }, [])
+  }, [updateDashboardAction])
 
   useEffect(() => {
     if (!isLegacyActionPath(window.location.pathname)) return
@@ -362,7 +408,27 @@ export function App() {
 
   const updateValidator = useCallback((nextValidator: Address) => {
     setValidator(nextValidator)
+    writeStorageAddress(appStorageKeys.selectedValidator, nextValidator)
     setTxPlan(null)
+  }, [])
+
+  const updateShowOnlyActive = useCallback((nextValue: boolean) => {
+    setShowOnlyActive(nextValue)
+    writeStorageFlag(appStorageKeys.validatorsActiveOnly, nextValue)
+  }, [])
+
+  const updateValidatorQuery = useCallback((nextQuery: string) => {
+    setValidatorQuery(nextQuery)
+    if (nextQuery.trim()) {
+      writeStorageText(appStorageKeys.validatorQuery, nextQuery)
+    } else {
+      removeStorageValue(appStorageKeys.validatorQuery)
+    }
+  }, [])
+
+  const updateValidatorSort = useCallback((nextSort: ValidatorSort) => {
+    setValidatorSort(nextSort)
+    writeStorageText(appStorageKeys.validatorSort, nextSort)
   }, [])
 
   const resetLiveAccountState = useCallback(() => {
@@ -384,18 +450,16 @@ export function App() {
   }, [])
 
   const selectStakingSubject = useCallback(
-    (identity: ReturnType<typeof createWalletIdentity>, options: { refresh?: boolean } = {}) => {
+    (identity: ReturnType<typeof createWalletIdentity>, options: { persist?: boolean; refresh?: boolean } = {}) => {
       setWalletIdentityState(identity)
-      setTxPlan(null)
-      setLiveSnapshot(null)
-      setRewardProof(null)
-      setLiveRewards(null)
+      if (options.persist !== false) writeStoredWalletSubject(identity.signer, identity.subject)
+      resetLiveAccountState()
       const session = identity.signer ? readRpcSession(identity) : null
       setRpcAuthToken(session?.token ?? null)
       if (options.refresh && identity.subject)
         void refreshLiveReadsRef.current?.(identity.subject, { forceRefresh: true })
     },
-    [setWalletIdentityState],
+    [resetLiveAccountState, setWalletIdentityState],
   )
 
   useEffect(() => {
@@ -406,7 +470,11 @@ export function App() {
         setValidatorStakeError("")
         setValidators((current) => {
           const merged = mergeValidatorMetadata(items, current)
-          setValidator((selected) => findValidator(merged, selected)?.address ?? merged[0]?.address ?? selected)
+          setValidator((selected) => {
+            const nextSelected = findValidator(merged, selected)?.address ?? merged[0]?.address ?? selected
+            if (nextSelected !== selected) writeStorageAddress(appStorageKeys.selectedValidator, nextSelected)
+            return nextSelected
+          })
           return merged
         })
       })
@@ -486,6 +554,25 @@ export function App() {
   }, [refreshLiveReads])
 
   useEffect(() => {
+    if (!stakingAccount || walletIdentity.subjectKind !== "safe") return
+    const normalizedStakingAccount = stakingAccount.toLowerCase()
+    if (selectedSafeHasMetadata) return
+    if (safeMetadataLookupRef.current.has(normalizedStakingAccount)) return
+    safeMetadataLookupRef.current.add(normalizedStakingAccount)
+    const controller = new AbortController()
+    fetchSafeMetadata(stakingAccount, controller.signal)
+      .then((safe) => {
+        if (controller.signal.aborted) return
+        setDiscoveredSafes((current) => mergeDiscoveredSafes(current, [safe]))
+      })
+      .catch(() => {
+        if (controller.signal.aborted) return
+        setDiscoveredSafes((current) => mergeDiscoveredSafes(current, [emptyDiscoveredSafe(stakingAccount)]))
+      })
+    return () => controller.abort()
+  }, [selectedSafeHasMetadata, stakingAccount, walletIdentity.subjectKind])
+
+  useEffect(() => {
     if (!account) {
       setDiscoveredSafes([])
       setSafeDiscoveryStatus("idle")
@@ -495,19 +582,22 @@ export function App() {
     const controller = new AbortController()
     setSafeDiscoveryStatus("loading")
     setSafeDiscoveryError("")
-    fetchOwnedSafes(account, controller.signal)
+    fetchOwnedSafesWithMetadata(account, controller.signal)
       .then((safes) => {
-        setDiscoveredSafes(safes)
+        if (controller.signal.aborted) return
+        setDiscoveredSafes((current) => mergeDiscoveredSafes(current, safes, stakingAccount))
         setSafeDiscoveryStatus("ready")
       })
       .catch((error) => {
         if (controller.signal.aborted) return
-        setDiscoveredSafes([])
+        setDiscoveredSafes((current) =>
+          stakingAccount ? current.filter((safe) => isSameAddress(safe.address, stakingAccount)) : [],
+        )
         setSafeDiscoveryStatus("failed")
         setSafeDiscoveryError(error instanceof Error ? error.message : t.safeDiscoveryFailed)
       })
     return () => controller.abort()
-  }, [account, t.safeDiscoveryFailed])
+  }, [account, stakingAccount, t.safeDiscoveryFailed])
 
   useEffect(() => {
     if (!window.ethereum) return
@@ -519,7 +609,7 @@ export function App() {
       })
       .catch(() => undefined)
 
-    if (window.localStorage.getItem(walletDisconnectKey) !== "true") {
+    if (!readStorageFlag(appStorageKeys.walletDisconnected)) {
       setWalletStatus("restoring")
       window.ethereum
         .request({ method: "eth_accounts" })
@@ -530,7 +620,7 @@ export function App() {
             setWalletStatus("idle")
             return
           }
-          const identity = createWalletIdentity(first)
+          const identity = createWalletIdentity(first, readStoredWalletSubject(first) ?? undefined)
           selectStakingSubject(identity)
           setWalletStatus("connected")
           await refreshLiveReadsRef.current?.(identity.subject)
@@ -542,15 +632,18 @@ export function App() {
 
     const handleAccountsChanged = (accounts: unknown) => {
       const [first] = accounts as Address[]
-      const identity = createWalletIdentity(first ?? null)
+      const identity = createWalletIdentity(
+        first ?? null,
+        first ? (readStoredWalletSubject(first) ?? undefined) : undefined,
+      )
       resetLiveAccountState()
       selectStakingSubject(identity)
       setWalletStatus(first ? "connected" : "idle")
       if (first) {
-        window.localStorage.removeItem(walletDisconnectKey)
+        removeStorageValue(appStorageKeys.walletDisconnected)
         void refreshLiveReadsRef.current?.(identity.subject)
       } else {
-        window.localStorage.setItem(walletDisconnectKey, "true")
+        writeStorageFlag(appStorageKeys.walletDisconnected, true)
       }
     }
     const handleChainChanged = (value: unknown) => {
@@ -561,7 +654,10 @@ export function App() {
         .then((accounts) => {
           if (cancelled) return
           const [first] = accounts as Address[]
-          const identity = createWalletIdentity(first ?? null)
+          const identity = createWalletIdentity(
+            first ?? null,
+            first ? (readStoredWalletSubject(first) ?? undefined) : undefined,
+          )
           selectStakingSubject(identity)
           setWalletStatus(first ? "connected" : "idle")
           if (first) void refreshLiveReadsRef.current?.(identity.subject)
@@ -579,17 +675,30 @@ export function App() {
 
   useEffect(() => {
     if (!isLanguageMenuOpen) return
+    const visibleLanguageMenu = () =>
+      [desktopLanguageMenuRef.current, mobileLanguageMenuRef.current].find(
+        (node) => node && node.offsetParent !== null,
+      ) ??
+      desktopLanguageMenuRef.current ??
+      mobileLanguageMenuRef.current
+    const visibleLanguageButton = () =>
+      [desktopLanguageButtonRef.current, mobileLanguageButtonRef.current].find(
+        (node) => node && node.offsetParent !== null,
+      ) ??
+      desktopLanguageButtonRef.current ??
+      mobileLanguageButtonRef.current
     window.requestAnimationFrame(() => {
-      languageMenuRef.current?.querySelector<HTMLButtonElement>("[aria-checked='true']")?.focus()
+      visibleLanguageMenu()?.querySelector<HTMLButtonElement>("[aria-checked='true']")?.focus()
     })
     const closeLanguageMenu = (event: PointerEvent) => {
-      if (languageMenuRef.current?.contains(event.target as Node)) return
+      const target = event.target as Node
+      if (desktopLanguageMenuRef.current?.contains(target) || mobileLanguageMenuRef.current?.contains(target)) return
       setIsLanguageMenuOpen(false)
     }
     const closeLanguageMenuWithEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setIsLanguageMenuOpen(false)
-        languageButtonRef.current?.focus()
+        visibleLanguageButton()?.focus()
       }
     }
     document.addEventListener("pointerdown", closeLanguageMenu)
@@ -602,7 +711,7 @@ export function App() {
 
   function selectLocale(nextLocale: Locale) {
     setLocale(nextLocale)
-    window.localStorage.setItem("safecafe:locale", nextLocale)
+    writeStorageText(appStorageKeys.locale, nextLocale)
     setIsLanguageMenuOpen(false)
   }
 
@@ -622,9 +731,10 @@ export function App() {
     }
     setWalletStatus("connecting")
     try {
-      window.localStorage.removeItem(walletDisconnectKey)
+      removeStorageValue(appStorageKeys.walletDisconnected)
       const accounts = (await window.ethereum.request({ method: "eth_requestAccounts" })) as Address[]
-      const identity = createWalletIdentity(accounts[0] ?? null)
+      const signer = accounts[0] ?? null
+      const identity = createWalletIdentity(signer, signer ? (readStoredWalletSubject(signer) ?? undefined) : undefined)
       await ensureMainnet()
       if (!identity.signer || !identity.subject) throw new Error(t.noAccount)
       selectStakingSubject(identity)
@@ -642,7 +752,7 @@ export function App() {
     resetLiveAccountState()
     setIsReadingLive(false)
     setWalletStatus("idle")
-    window.localStorage.setItem(walletDisconnectKey, "true")
+    writeStorageFlag(appStorageKeys.walletDisconnected, true)
     clearRpcSession()
     setRpcAuthToken(null)
   }
@@ -672,6 +782,24 @@ export function App() {
 
   async function forceRefreshLiveReads() {
     await refreshLiveReads(subjectAccount, { forceRefresh: true })
+  }
+
+  async function refreshLiveDataForAgent() {
+    if (!subjectAccount) return null
+    const refreshed = await refreshLiveReads(subjectAccount, { forceRefresh: true })
+    if (!refreshed) return null
+    return {
+      account,
+      subjectAccount,
+      subjectKind: walletIdentity.subjectKind,
+      chainId,
+      liveBlock: refreshed.health.blockNumber,
+      liveSnapshot: refreshed.snapshot,
+      summary: summaryFromSnapshot(refreshed.snapshot, refreshed.rewards),
+      validators: refreshed.validatorsWithPositions,
+      rewardProof: refreshed.rewardProof,
+      liveMerkleRoot: refreshed.health.merkleRoot,
+    }
   }
 
   async function authenticateAgent() {
@@ -930,11 +1058,6 @@ export function App() {
       if (validation) throw new Error(validation)
       if (!planToSubmit.simulation) throw new Error(t.connectToPlan)
       if (planToSubmit.simulation.status === "failed") throw new Error(planToSubmit.simulation.message)
-      if (!isSelfSubject(walletIdentity)) {
-        exportSafePayload(planToSubmit)
-        toast(t.safeSubjectExportOnly, "info")
-        return
-      }
       const client = createWalletClient({
         account,
         chain: ethereumMainnet,
@@ -943,29 +1066,53 @@ export function App() {
       const requireAuth = Boolean(options.requireAuth)
       const authToken = requireAuth ? (rpcAuthToken ?? (await ensureRpcAuthTokenForCurrentWallet())) : null
       const publicClient = createSafenetPublicClient({ authToken, rpcUrl: import.meta.env.VITE_RPC_URL })
-      for (const tx of planToSubmit.txs) {
-        setTxProgress(`${t.simulationStatus}: ${translateTxLabel(tx.label, t)}`)
+      let confirmedTxCount = 0
+      if (!isSelfSubject(walletIdentity)) {
+        const safeMode = await resolveSafeExecutionMode({ client: publicClient, safe: subjectAccount, signer: account })
+        if (safeMode.kind === "not-owner") throw new Error(t.safeOwnerRequired)
+        if (safeMode.kind === "multi-owner") {
+          exportSafePayload(planToSubmit)
+          toast(`${t.safeMultisigThresholdExport} (${safeMode.threshold.toString()}/${safeMode.owners.length})`, "info")
+          return
+        }
         try {
-          await publicClient.call({
-            account: subjectAccount,
+          confirmedTxCount = await submitSafeOwnerPlan({ client, publicClient, plan: planToSubmit })
+        } finally {
+          if (confirmedTxCount > 0) await refreshLiveReads(subjectAccount, { forceRefresh: true })
+        }
+        return
+      }
+      try {
+        for (const tx of planToSubmit.txs) {
+          const label = translateTxLabel(tx.label, t)
+          setTxProgress(`${t.simulationStatus}: ${label}`)
+          try {
+            await publicClient.call({
+              account: subjectAccount,
+              to: tx.to,
+              data: tx.data,
+              value: tx.value,
+            })
+          } catch (error) {
+            throw new Error(`${label}: ${readableSimulationError(error, t.simulationFailed)}`)
+          }
+          setTxProgress(label)
+          const hash = await client.sendTransaction({
+            account,
             to: tx.to,
             data: tx.data,
             value: tx.value,
           })
-        } catch (error) {
-          throw new Error(readableSimulationError(error, t.simulationFailed))
+          toast(`${t.submittedTx} ${label}: ${compactAddress(hash, 10, 8)}`, "success")
+          setTxProgress(`${t.confirmingTx}: ${label}`)
+          const receipt = await publicClient.waitForTransactionReceipt({ hash })
+          if (receipt.status !== "success") throw new Error(`${t.transactionFailed} ${label}`)
+          confirmedTxCount += 1
+          toast(`${t.confirmedTx}: ${label}`, "success")
         }
-        setTxProgress(translateTxLabel(tx.label, t))
-        const hash = await client.sendTransaction({
-          account,
-          to: tx.to,
-          data: tx.data,
-          value: tx.value,
-        })
-        toast(`${t.submittedTx} ${translateTxLabel(tx.label, t)}: ${compactAddress(hash, 10, 8)}`, "success")
-        await publicClient.waitForTransactionReceipt({ hash })
+      } finally {
+        if (confirmedTxCount > 0) await refreshLiveReads(subjectAccount, { forceRefresh: true })
       }
-      await refreshLiveReads(subjectAccount, { forceRefresh: true })
     } catch (error) {
       toast(readableSimulationError(error, t.transactionFailed), "warning")
     } finally {
@@ -973,6 +1120,45 @@ export function App() {
       if (!options.alreadySubmitting) setSubmittingAction(null)
       setTxProgress("")
     }
+  }
+
+  async function submitSafeOwnerPlan(params: {
+    client: ReturnType<typeof createWalletClient>
+    publicClient: ReturnType<typeof createSafenetPublicClient>
+    plan: TxPlan
+  }) {
+    if (!account || !subjectAccount) throw new Error(t.agentAccountChanged)
+    let confirmedTxCount = 0
+    for (const tx of params.plan.txs) {
+      const label = translateTxLabel(tx.label, t)
+      setTxProgress(`${t.simulationStatus}: ${label}`)
+      const safeTx = buildSafeExecTransaction({ safe: subjectAccount, signer: account, tx })
+      try {
+        await params.publicClient.call({
+          account,
+          to: safeTx.to,
+          data: safeTx.data,
+          value: safeTx.value,
+        })
+      } catch (error) {
+        throw new Error(`${label}: ${readableSimulationError(error, t.simulationFailed)}`)
+      }
+      setTxProgress(`${t.safeExecDirect}: ${label}`)
+      const hash = await params.client.sendTransaction({
+        account,
+        chain: ethereumMainnet,
+        to: safeTx.to,
+        data: safeTx.data,
+        value: safeTx.value,
+      })
+      toast(`${t.submittedTx} ${label}: ${compactAddress(hash, 10, 8)}`, "success")
+      setTxProgress(`${t.confirmingTx}: ${label}`)
+      const receipt = await params.publicClient.waitForTransactionReceipt({ hash })
+      if (receipt.status !== "success") throw new Error(`${t.transactionFailed} ${label}`)
+      confirmedTxCount += 1
+      toast(`${t.confirmedTx}: ${label}`, "success")
+    }
+    return confirmedTxCount
   }
 
   function validateAction(targetAction = action): string | null {
@@ -1006,7 +1192,7 @@ export function App() {
       nextAction === "unstake" ||
       (nextAction === "claim-rewards" && activeNav === "dashboard")
     ) {
-      setDashboardAction(nextAction)
+      updateDashboardAction(nextAction)
     }
     setTxPlan(null)
     if ((nextAction === "stake" || nextAction === "unstake") && window.location.pathname !== navPaths.dashboard) {
@@ -1014,7 +1200,6 @@ export function App() {
       window.history.pushState(null, "", navPaths.dashboard)
     }
   }
-
   function selectValidatorAction(nextValidator: Address, nextAction: Action) {
     const nextValidatorInfo = findValidator(validators, nextValidator)
     if (nextAction === "stake") {
@@ -1030,7 +1215,7 @@ export function App() {
     updateValidator(nextValidator)
     setAction(nextAction)
     if (nextAction === "stake" || nextAction === "unstake" || nextAction === "claim-rewards") {
-      setDashboardAction(nextAction)
+      updateDashboardAction(nextAction)
     }
     setTxPlan(null)
     return true
@@ -1087,11 +1272,71 @@ export function App() {
     window.open(`${EXPLORER_BASE_URL}/address/${address}`, "_blank", "noopener,noreferrer")
   }
 
+  function renderTopbarStatus(variant: "desktop" | "mobile") {
+    const isDesktop = variant === "desktop"
+    return (
+      <div className={`topbar-status ${isDesktop ? "desktop-topbar-status" : "mobile-topbar-status"}`}>
+        <div className="language-menu-wrap" ref={isDesktop ? desktopLanguageMenuRef : mobileLanguageMenuRef}>
+          <button
+            ref={isDesktop ? desktopLanguageButtonRef : mobileLanguageButtonRef}
+            type="button"
+            className="language-pill"
+            onClick={() => setIsLanguageMenuOpen((value) => !value)}
+            aria-label={t.switchLanguage}
+            aria-haspopup="menu"
+            aria-expanded={isLanguageMenuOpen}
+          >
+            <Languages size={17} />
+            <span>{activeLocale.shortLabel}</span>
+            <ChevronDown size={14} />
+          </button>
+          {isLanguageMenuOpen && (
+            <div className="language-menu" role="menu">
+              {localeOptions.map((option) => (
+                <button
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={option.code === locale}
+                  className={option.code === locale ? "active" : ""}
+                  key={option.code}
+                  onClick={() => selectLocale(option.code)}
+                >
+                  <span>{option.nativeLabel}</span>
+                  <small>{option.label}</small>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <button
+          type="button"
+          className="wallet-pill"
+          disabled={walletBusy}
+          aria-label={account ? `${t.wallet}: ${walletButtonLabel}, ${walletButtonStatus}` : t.connectWallet}
+          aria-haspopup={account ? "dialog" : undefined}
+          onClick={() => (account ? setModal({ type: "wallet" }) : connectWallet())}
+        >
+          <Wallet size={18} />
+          <span>
+            <strong>{walletButtonLabel}</strong>
+            <small>{walletButtonStatus}</small>
+          </span>
+          <ChevronDown size={16} />
+        </button>
+      </div>
+    )
+  }
+
   return (
     <div className="app-shell">
       <header className="topbar">
         <div className="topbar-inner">
-          <button type="button" className="brand" onClick={() => navigate("dashboard")} aria-label="Safecafe dashboard">
+          <button
+            type="button"
+            className="brand"
+            onClick={() => navigate("dashboard")}
+            aria-label={`${t.appTitle} ${t.dashboard}`}
+          >
             <div className="brand-mark">
               <svg viewBox="0 0 64 64" role="img" aria-label="Safecafe">
                 <title>Safecafe</title>
@@ -1141,7 +1386,7 @@ export function App() {
           </div>
 
           <div className={`topbar-menu ${isMenuOpen ? "open" : ""}`}>
-            <nav className="nav-tabs" aria-label="Primary navigation">
+            <nav className="nav-tabs" aria-label={t.primaryNavigation}>
               {navItems.map((item) => {
                 const Icon = navMeta[item].icon
                 return (
@@ -1158,55 +1403,7 @@ export function App() {
               })}
             </nav>
 
-            <div className="topbar-status">
-              <div className="language-menu-wrap" ref={languageMenuRef}>
-                <button
-                  ref={languageButtonRef}
-                  type="button"
-                  className="language-pill"
-                  onClick={() => setIsLanguageMenuOpen((value) => !value)}
-                  aria-label={t.switchLanguage}
-                  aria-haspopup="menu"
-                  aria-expanded={isLanguageMenuOpen}
-                >
-                  <Languages size={17} />
-                  <span>{activeLocale.shortLabel}</span>
-                  <ChevronDown size={14} />
-                </button>
-                {isLanguageMenuOpen && (
-                  <div className="language-menu" role="menu">
-                    {localeOptions.map((option) => (
-                      <button
-                        type="button"
-                        role="menuitemradio"
-                        aria-checked={option.code === locale}
-                        className={option.code === locale ? "active" : ""}
-                        key={option.code}
-                        onClick={() => selectLocale(option.code)}
-                      >
-                        <span>{option.nativeLabel}</span>
-                        <small>{option.label}</small>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-              <button
-                type="button"
-                className="wallet-pill"
-                disabled={walletBusy}
-                aria-label={account ? `${t.wallet}: ${walletButtonLabel}, ${walletButtonStatus}` : t.connectWallet}
-                aria-haspopup={account ? "dialog" : undefined}
-                onClick={() => (account ? setModal({ type: "wallet" }) : connectWallet())}
-              >
-                <Wallet size={18} />
-                <span>
-                  <strong>{walletButtonLabel}</strong>
-                  <small>{walletButtonStatus}</small>
-                </span>
-                <ChevronDown size={16} />
-              </button>
-            </div>
+            {renderTopbarStatus("mobile")}
           </div>
           <span className="sidebar-version">Version {SAFECAFE_VERSION}</span>
         </div>
@@ -1215,6 +1412,7 @@ export function App() {
       <main className="page">
         <div className="dashboard-topline">
           <h1>{t.appTitle}</h1>
+          {renderTopbarStatus("desktop")}
         </div>
         <section className="summary-card enter">
           <div className="section-heading">
@@ -1319,7 +1517,7 @@ export function App() {
             validator={validator}
             visibleValidators={dashboardValidators}
             validators={dashboardValidators}
-            setShowOnlyActive={setShowOnlyActive}
+            setShowOnlyActive={updateShowOnlyActive}
             dataStatus={dataStatus}
             stakingAllowance={liveSnapshot?.stakingAllowance ?? 0n}
             summary={displaySummary}
@@ -1333,9 +1531,9 @@ export function App() {
               activeOnly={showOnlyActive}
               isLoading={isLoadingValidators}
               query={validatorQuery}
-              setActiveOnly={setShowOnlyActive}
-              setQuery={setValidatorQuery}
-              setSort={setValidatorSort}
+              setActiveOnly={updateShowOnlyActive}
+              setQuery={updateValidatorQuery}
+              setSort={updateValidatorSort}
               shownCount={displayValidators.length}
               sort={validatorSort}
               t={t}
@@ -1454,8 +1652,8 @@ export function App() {
         onAuthenticateAgent={authenticateAgent}
         onConnectWallet={connectWallet}
         onSimulatePlan={(plan) => simulateTxPlan(plan, { requireAuth: true })}
-        onExportPlan={exportSafePayload}
         onOpen={() => setModal(null)}
+        onRefreshLiveData={refreshLiveDataForAgent}
         onSubmitPlan={(plan) => submitPlan(plan, { requireAuth: true })}
       />
     </div>
@@ -1473,7 +1671,7 @@ async function readLiveData(account: Address, options: { forceRefresh?: boolean 
     const params = new URLSearchParams({ account })
     if (options.forceRefresh) params.set("refresh", "true")
     const response = await fetch(`/api/account/live?${params.toString()}`, { cache: "no-store" })
-    if (!response.ok) throw new Error(`Account live API failed: ${response.status}`)
+    if (!response.ok) throw new Error(await readLiveDataError(response))
     return parseLiveReadResult(await response.json())
   })()
 
@@ -1485,13 +1683,99 @@ async function readLiveData(account: Address, options: { forceRefresh?: boolean 
   }
 }
 
-async function fetchOwnedSafes(owner: Address, signal?: AbortSignal): Promise<Address[]> {
+async function readLiveDataError(response: Response) {
+  try {
+    const body = (await response.json()) as { code?: unknown; error?: unknown; requestId?: unknown }
+    const message = typeof body.error === "string" ? body.error : `Account live API failed: ${response.status}`
+    const code = typeof body.code === "string" ? body.code : ""
+    const requestId = typeof body.requestId === "string" ? body.requestId : response.headers.get("x-request-id")
+    return [message, code ? `(${code})` : "", requestId ? `request ${requestId}` : ""].filter(Boolean).join(" ")
+  } catch {
+    return `Account live API failed: ${response.status}`
+  }
+}
+
+async function fetchOwnedSafesWithMetadata(owner: Address, signal?: AbortSignal): Promise<DiscoveredSafe[]> {
   const params = new URLSearchParams({ owner })
   const response = await fetch(`/api/safes?${params.toString()}`, { cache: "no-store", signal })
-  if (!response.ok) throw new Error(`Safe discovery failed: ${response.status}`)
+  if (!response.ok) throw new Error(await readSafeDiscoveryError(response))
   const data = (await response.json()) as { safes?: unknown }
   if (!Array.isArray(data.safes)) return []
-  return data.safes.map((safe) => normalizeAddress(safe)).filter((safe): safe is Address => Boolean(safe))
+  return data.safes.map(parseDiscoveredSafe).filter((safe): safe is DiscoveredSafe => Boolean(safe))
+}
+
+async function fetchSafeMetadata(address: Address, signal?: AbortSignal): Promise<DiscoveredSafe> {
+  const params = new URLSearchParams({ safe: address })
+  const response = await fetch(`/api/safes?${params.toString()}`, { cache: "no-store", signal })
+  if (!response.ok) throw new Error(await readSafeDiscoveryError(response))
+  const data = (await response.json()) as { safe?: unknown }
+  return parseDiscoveredSafe(data.safe) ?? emptyDiscoveredSafe(address)
+}
+
+function parseDiscoveredSafe(value: unknown): DiscoveredSafe | null {
+  const address = normalizeAddress(typeof value === "string" ? value : (value as { address?: unknown } | null)?.address)
+  if (!address) return null
+  if (!value || typeof value !== "object") return emptyDiscoveredSafe(address)
+  const ownersCount = safeNumberOrNull((value as { ownersCount?: unknown }).ownersCount)
+  const threshold = safeNumberOrNull((value as { threshold?: unknown }).threshold)
+  return { address, ownersCount, threshold }
+}
+
+function safeNumberOrNull(value: unknown) {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null
+}
+
+async function readSafeDiscoveryError(response: Response) {
+  try {
+    const body = (await response.json()) as { code?: unknown; error?: unknown; requestId?: unknown }
+    const message = typeof body.error === "string" ? body.error : `Safe discovery failed: ${response.status}`
+    const code = typeof body.code === "string" ? body.code : ""
+    const requestId = typeof body.requestId === "string" ? body.requestId : response.headers.get("x-request-id")
+    return [message, code ? `(${code})` : "", requestId ? `request ${requestId}` : ""].filter(Boolean).join(" ")
+  } catch {
+    return `Safe discovery failed: ${response.status}`
+  }
+}
+
+function emptyDiscoveredSafe(address: Address): DiscoveredSafe {
+  return {
+    address,
+    ownersCount: null,
+    threshold: null,
+  }
+}
+
+function mergeDiscoveredSafes(
+  currentSafes: DiscoveredSafe[],
+  nextSafes: DiscoveredSafe[],
+  selectedSafe?: Address | null,
+): DiscoveredSafe[] {
+  const merged = new Map<string, DiscoveredSafe>()
+  const selectedKey = selectedSafe?.toLowerCase()
+  for (const safe of currentSafes) {
+    if (!selectedKey || safe.address.toLowerCase() === selectedKey) merged.set(safe.address.toLowerCase(), safe)
+  }
+  for (const safe of nextSafes) {
+    const key = safe.address.toLowerCase()
+    const existing = merged.get(key)
+    merged.set(key, preferSafeWithMetadata(existing, safe))
+  }
+  return [...merged.values()]
+}
+
+function preferSafeWithMetadata(current: DiscoveredSafe | undefined, next: DiscoveredSafe): DiscoveredSafe {
+  if (!current) return next
+  if (hasSafeMultisigMetadata(current) && !hasSafeMultisigMetadata(next)) return current
+  if (!hasSafeMultisigMetadata(current) && !hasSafeMultisigMetadata(next)) return current
+  return next
+}
+
+function hasSafeMultisigMetadata(safe: DiscoveredSafe) {
+  return safe.threshold !== null && safe.ownersCount !== null
+}
+
+function isSameAddress(a: Address, b: Address) {
+  return a.toLowerCase() === b.toLowerCase()
 }
 
 function parseLiveReadResult(value: unknown): LiveReadResult {
@@ -1540,6 +1824,20 @@ function parseLiveReadResult(value: unknown): LiveReadResult {
       totalStake: toBigInt(validator.totalStake),
       userStake: toBigInt(validator.userStake),
     })),
+  }
+}
+
+function summaryFromSnapshot(snapshot: AccountSnapshot, rewards: bigint): AccountSummary {
+  const pendingWithdrawals = snapshot.pendingWithdrawals.reduce((sum, item) => sum + item.amount, 0n)
+  const now = BigInt(Math.floor(Date.now() / 1000))
+  const { amount: nextAmount, claimableAt: nextClaimableAt } = snapshot.nextClaimableWithdrawal
+  return {
+    safeBalance: snapshot.safeBalance,
+    totalStaked: snapshot.totalStaked,
+    pendingWithdrawals,
+    claimableWithdrawals: nextClaimableAt <= now ? nextAmount : 0n,
+    claimableRewards: rewards,
+    withdrawDelay: snapshot.withdrawDelay,
   }
 }
 

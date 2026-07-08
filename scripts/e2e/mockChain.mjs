@@ -53,7 +53,14 @@ const merkleDropAbi = parseAbi([
   "function claim(address account, uint256 cumulativeAmount, bytes32 expectedMerkleRoot, bytes32[] merkleProof)",
 ])
 
-const allAbis = [erc20Abi, stakingAbi, merkleDropAbi]
+const safeAccountAbi = parseAbi([
+  "function getOwners() view returns (address[])",
+  "function getThreshold() view returns (uint256)",
+  "function isOwner(address owner) view returns (bool)",
+  "function execTransaction(address to,uint256 value,bytes data,uint8 operation,uint256 safeTxGas,uint256 baseGas,uint256 gasPrice,address gasToken,address refundReceiver,bytes signatures) payable returns (bool success)",
+])
+
+const allAbis = [erc20Abi, stakingAbi, merkleDropAbi, safeAccountAbi]
 
 export function createMockChain(seed = {}) {
   const now = Math.floor(Date.now() / 1000)
@@ -67,6 +74,8 @@ export function createMockChain(seed = {}) {
     rewardCumulativeAmount: seed.rewardCumulativeAmount ?? 8n * eth,
     safeBalance: seed.safeBalance ?? 100n * eth,
     safes: seed.safes ?? ["0x1111111111111111111111111111111111111111"],
+    safeOwners: (seed.safeOwners ?? [defaultAccount]).map((owner) => getAddress(owner)),
+    safeThreshold: seed.safeThreshold ?? 1n,
     agentRequests: 0,
     rpcCalls: [],
     stakingAllowance: seed.stakingAllowance ?? 0n,
@@ -136,10 +145,17 @@ export function createMockChain(seed = {}) {
   }
 
   async function fulfillSafes(route) {
+    const url = new URL(route.request().url())
+    const safe = url.searchParams.get("safe")
+    const metadata = (address) => ({
+      address: getAddress(address),
+      ownersCount: state.safeOwners.length,
+      threshold: Number(state.safeThreshold),
+    })
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ safes: state.safes }),
+      body: JSON.stringify(safe ? { safe: metadata(safe) } : { safes: state.safes.map(metadata) }),
     })
   }
 
@@ -308,6 +324,9 @@ export function createMockChain(seed = {}) {
     if (isAddressEqual(to, mockContracts.merkleDrop)) {
       return simulateMerkleCall(from, decoded)
     }
+    if (state.safes.some((safe) => isAddressEqual(to, safe))) {
+      return simulateSafeCall(from, decoded)
+    }
     return "0x"
   }
 
@@ -382,6 +401,35 @@ export function createMockChain(seed = {}) {
     return "0x"
   }
 
+  function simulateSafeCall(from, decoded) {
+    if (decoded.functionName === "getOwners") return encodeResult(safeAccountAbi, "getOwners", state.safeOwners)
+    if (decoded.functionName === "getThreshold")
+      return encodeResult(safeAccountAbi, "getThreshold", state.safeThreshold)
+    if (decoded.functionName === "isOwner") {
+      const [owner] = decoded.args
+      return encodeResult(
+        safeAccountAbi,
+        "isOwner",
+        state.safeOwners.some((safeOwner) => isAddressEqual(safeOwner, owner)),
+      )
+    }
+    if (decoded.functionName === "execTransaction") {
+      const [to, value, data, operation] = decoded.args
+      ensure(
+        state.safeOwners.some((owner) => isAddressEqual(owner, from)),
+        "Signer is not Safe owner",
+      )
+      ensure(state.safeThreshold === 1n, "Safe threshold requires multiple owners")
+      ensure(operation === 0, "Only Safe CALL operation is supported")
+      ensure(value === 0n, "Only zero-value Safe transactions are supported")
+      const nested = decodeKnownFunction(data)
+      if (isAddressEqual(to, mockContracts.safeToken) && nested.functionName === "approve") return "0x"
+      if (isAddressEqual(to, mockContracts.staking)) return simulateStakingCall(state.safes[0], nested)
+      if (isAddressEqual(to, mockContracts.merkleDrop)) return simulateMerkleCall(state.safes[0], nested)
+    }
+    return "0x"
+  }
+
   async function installWallet(page, account = state.account) {
     await page.addInitScript(
       ({ account: injectedAccount }) => {
@@ -452,6 +500,8 @@ export function createMockChain(seed = {}) {
       applyStakingTransaction(account, decoded)
     } else if (isAddressEqual(to, mockContracts.merkleDrop)) {
       applyMerkleTransaction(account, decoded)
+    } else if (state.safes.some((safe) => isAddressEqual(to, safe))) {
+      applySafeTransaction(account, decoded)
     } else {
       throw new Error(`Unsupported mock transaction target ${to}`)
     }
@@ -515,6 +565,36 @@ export function createMockChain(seed = {}) {
     ensure(cumulativeAmount > state.cumulativeClaimed, "Rewards already claimed")
     state.safeBalance += cumulativeAmount - state.cumulativeClaimed
     state.cumulativeClaimed = cumulativeAmount
+  }
+
+  function applySafeTransaction(account, decoded) {
+    if (decoded.functionName !== "execTransaction")
+      throw new Error(`Unsupported Safe transaction ${decoded.functionName}`)
+    const [to, value, data, operation] = decoded.args
+    ensure(
+      state.safeOwners.some((owner) => isAddressEqual(owner, account)),
+      "Signer is not Safe owner",
+    )
+    ensure(state.safeThreshold === 1n, "Safe threshold requires multiple owners")
+    ensure(operation === 0, "Only Safe CALL operation is supported")
+    ensure(value === 0n, "Only zero-value Safe transactions are supported")
+    const safeAccount = state.safes[0]
+    const nested = decodeKnownFunction(data)
+    if (isAddressEqual(to, mockContracts.safeToken) && nested.functionName === "approve") {
+      const [spender, amount] = nested.args
+      ensure(isAddressEqual(spender, mockContracts.staking), "Only staking allowance is supported")
+      state.stakingAllowance = amount
+      return
+    }
+    if (isAddressEqual(to, mockContracts.staking)) {
+      applyStakingTransaction(safeAccount, nested)
+      return
+    }
+    if (isAddressEqual(to, mockContracts.merkleDrop)) {
+      applyMerkleTransaction(safeAccount, nested)
+      return
+    }
+    throw new Error(`Unsupported Safe nested target ${to}`)
   }
 
   function validatorState(address) {

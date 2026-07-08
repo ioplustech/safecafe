@@ -37,11 +37,12 @@ import {
   serializeAgentSessions,
   toAgentChatContext,
 } from "../agent"
-import { compactAddress, type TxPlan } from "../protocol"
+import { compactAddress, formatSafe, type TxPlan } from "../protocol"
 import { AgentLogo } from "./AgentLogo"
 import { isAgentAuthRequired } from "./agentAuthConfig"
 import { translateTxLabel, translateTxWarning } from "./formatters"
 import type { MessageBundle } from "./i18n"
+import { appStorageKeys, readStorageText, removeStorageValue, writeStorageJson, writeStorageText } from "./persistence"
 import { Tooltip } from "./ui"
 
 type AgentChatMessage = {
@@ -61,6 +62,7 @@ type PreparedStakingActionData = {
 }
 
 type AgentSession = {
+  composerText: string
   draft: AgentPlan | null
   draftKey: string
   executablePlan: TxPlan | null
@@ -84,17 +86,13 @@ export type AgentChatDialogProps = {
   onAuthenticateAgent: () => Promise<string | null>
   onClose: () => void
   onConnectWallet: () => Promise<void>
-  onExportPlan: (plan: TxPlan) => void
+  onRefreshLiveData: () => Promise<AgentContext | null>
   onSimulatePlan: (plan: TxPlan) => Promise<TxPlan>
   onSubmitPlan: (plan: TxPlan) => Promise<void>
 }
 
 const agentAuthRequired = isAgentAuthRequired()
-const agentSessionsStorageKey = "safecafe:agent:sessions"
-const agentActiveSessionStorageKey = "safecafe:agent:active-session"
-
 export function AgentChatDialog(props: AgentChatDialogProps) {
-  const [input, setInput] = useState("")
   const [sessions, setSessions] = useState<AgentSession[]>(() => loadStoredSessions(props.t.agentNewSession))
   const [activeSessionId, setActiveSessionId] = useState(() => loadStoredActiveSessionId(sessions))
   const [isDrafting, setIsDrafting] = useState(false)
@@ -112,6 +110,7 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
   const didHydrateStorageRef = useRef(false)
 
   const activeSession = sessions.find((session) => session.id === activeSessionId) ?? sessions[0]
+  const input = activeSession?.composerText ?? ""
   const currentContextKey = agentContextKey(props.context)
   const isStale = Boolean(activeSession.draft && activeSession.draftKey && activeSession.draftKey !== currentContextKey)
   const blocked = activeSession.draft?.risks.some((risk) => risk.severity === "blocked") ?? false
@@ -181,6 +180,12 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
   }, [props.isOpen])
 
   useEffect(() => {
+    if (!props.isOpen || !composerRef.current) return
+    void input
+    resizeComposer(composerRef.current)
+  }, [input, props.isOpen])
+
+  useEffect(() => {
     if (!sessions.some((session) => session.id === activeSessionId) && sessions[0]) setActiveSessionId(sessions[0].id)
   }, [activeSessionId, sessions])
 
@@ -190,8 +195,8 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
       return
     }
     if (typeof window === "undefined") return
-    window.localStorage.setItem(agentSessionsStorageKey, JSON.stringify(serializeAgentSessions(sessions)))
-    window.localStorage.setItem(agentActiveSessionStorageKey, activeSessionId)
+    writeStorageJson(appStorageKeys.agentSessions, serializeAgentSessions(sessions))
+    writeStorageText(appStorageKeys.agentActiveSession, activeSessionId)
   }, [activeSessionId, sessions])
 
   useEffect(() => {
@@ -217,6 +222,7 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
     }
     if (contextKeyRef.current === currentContextKey) return
     contextKeyRef.current = currentContextKey
+    if (activeSession.draftKey && activeSession.draftKey === currentContextKey) return
     requestSeqRef.current += 1
     streamAbortRef.current?.abort()
     streamAbortRef.current = null
@@ -236,16 +242,17 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
           : session,
       ),
     )
-  }, [activeSessionId, currentContextKey])
+  }, [activeSession.draftKey, activeSessionId, currentContextKey])
 
   async function send(text = input) {
     const trimmed = text.trim()
     if (!trimmed || isBusy) return
     if (canChat && isConfirmationText(trimmed) && activeSession.executablePlan) {
-      setInput("")
+      setComposerText("")
       resetComposer(composerRef.current)
       updateActiveSession((session) => ({
         ...session,
+        composerText: "",
         messages: [...session.messages, createMessage("user", trimmed)],
       }))
       if (!canUsePlan) {
@@ -262,10 +269,11 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
       return
     }
     if (!canChat) {
-      setInput("")
+      setComposerText("")
       resetComposer(composerRef.current)
       updateActiveSession((session) => ({
         ...session,
+        composerText: "",
         messages: [...session.messages, createMessage("assistant", authStatusView.body)],
       }))
       return
@@ -273,13 +281,14 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
     const requestId = requestSeqRef.current + 1
     requestSeqRef.current = requestId
     const requestSessionId = activeSession.id
-    setInput("")
+    setComposerText("")
     resetComposer(composerRef.current)
     const history = activeSession.messages
       .filter((message) => message.role === "assistant" || message.role === "tool" || message.role === "user")
       .map(({ role, content }) => ({ role: role as "assistant" | "tool" | "user", content }))
     updateActiveSession((session) => ({
       ...session,
+      composerText: "",
       draft: null,
       draftKey: "",
       executablePlan: null,
@@ -323,6 +332,7 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
     const controller = new AbortController()
     let preparedIntent: AgentIntent | null = null
     let source: "fallback" | "llm" | null = null
+    const clientToolResults: Array<Promise<string | null>> = []
     streamAbortRef.current?.abort()
     streamAbortRef.current = controller
     setIsStreaming(true)
@@ -355,6 +365,8 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
           }
           if (event.type === "tool") {
             upsertToolMessage(sessionId, event.callId, event.content || event.name, event.status === "running")
+            const clientTool = runClientTool(event, sessionId)
+            if (clientTool) clientToolResults.push(clientTool)
             const intent = event.status === "completed" ? readPreparedIntent(event.name, event.data) : null
             if (intent) preparedIntent = intent
           }
@@ -378,6 +390,13 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
     } finally {
       if (streamAbortRef.current === controller) streamAbortRef.current = null
       if (requestSeqRef.current === requestId) setIsStreaming(false)
+    }
+    const summaries = (await Promise.all(clientToolResults)).filter((summary): summary is string => Boolean(summary))
+    if (requestSeqRef.current === requestId && summaries.length > 0) {
+      updateSession(sessionId, (session) => ({
+        ...session,
+        messages: [...session.messages, ...summaries.map((summary) => createMessage("assistant", summary))],
+      }))
     }
     return { preparedIntent, source }
   }
@@ -406,6 +425,17 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
       upsertToolMessage(sessionId, "local-compile-plan", props.t.agentToolCompilePlan, true)
       const nextDraft = compileAgentPlan(instruction, intent, props.context)
       if (requestSeqRef.current !== requestId) return
+      if (shouldReplyWithoutActionCard(nextDraft)) {
+        updateSession(sessionId, (session) => ({
+          ...session,
+          draft: null,
+          draftKey: "",
+          executablePlan: null,
+          pendingIntentText: "",
+          messages: [...session.messages, createMessage("assistant", directGuidanceText(nextDraft, props.t))],
+        }))
+        return
+      }
       updateSession(sessionId, (session) => ({ ...session, draft: nextDraft }))
       upsertToolMessage(sessionId, "local-simulate-plan", props.t.agentToolSimulatePlan, true)
       const flattened = flattenExecutableTxPlan(nextDraft) ?? flattenCurrentExecutableTxPlan(nextDraft)
@@ -485,6 +515,7 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
     resetBusy()
     updateActiveSession((session) => ({
       ...session,
+      composerText: "",
       draft: null,
       draftKey: "",
       executablePlan: null,
@@ -503,8 +534,8 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
     setActiveSessionId(session.id)
     setIsSessionMenuOpen(false)
     if (typeof window !== "undefined") {
-      window.localStorage.removeItem(agentSessionsStorageKey)
-      window.localStorage.removeItem(agentActiveSessionStorageKey)
+      removeStorageValue(appStorageKeys.agentSessions)
+      removeStorageValue(appStorageKeys.agentActiveSession)
     }
   }
 
@@ -547,6 +578,10 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
 
   function updateActiveSession(updater: (session: AgentSession) => AgentSession) {
     updateSession(activeSessionId, updater)
+  }
+
+  function setComposerText(nextText: string) {
+    updateActiveSession((session) => ({ ...session, composerText: nextText }))
   }
 
   function updateSession(sessionId: string, updater: (session: AgentSession) => AgentSession) {
@@ -593,6 +628,36 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
     })
   }
 
+  function runClientTool(
+    event: {
+      callId: string
+      name: string
+      status: "completed" | "failed" | "running"
+      data?: unknown
+    },
+    sessionId: string,
+  ): Promise<string | null> | null {
+    if (event.status !== "completed") return null
+    if (!isRefreshLiveDataTool(event.name, event.data)) return null
+    return refreshLiveDataForAgent(sessionId, event.callId)
+  }
+
+  async function refreshLiveDataForAgent(sessionId: string, toolCallId: string) {
+    upsertToolMessage(sessionId, toolCallId, props.t.agentToolRefreshLiveData, true)
+    try {
+      const refreshed = await props.onRefreshLiveData()
+      if (!refreshed) {
+        finishToolMessage(sessionId, toolCallId, props.t.agentToolFailed)
+        return props.t.liveDataFailed
+      }
+      finishToolMessage(sessionId, toolCallId, props.t.agentToolReady)
+      return formatLiveAccountSummary(refreshed, props.t)
+    } catch {
+      finishToolMessage(sessionId, toolCallId, props.t.agentToolFailed)
+      return props.t.liveDataFailed
+    }
+  }
+
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key !== "Enter" || event.shiftKey) return
     event.preventDefault()
@@ -616,16 +681,16 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
     await props.onSubmitPlan(plan)
   }
 
-  if (!props.isOpen) return null
-
   return (
     <section
       ref={dialogRef}
       className={`agent-dialog${props.isClosing ? " closing" : ""}`}
       role="dialog"
-      aria-modal="true"
+      aria-modal={props.isOpen}
+      aria-hidden={!props.isOpen}
       aria-label={props.t.agentTitle}
       aria-busy={isBusy}
+      inert={!props.isOpen}
       style={props.anchor ? dialogPosition() : undefined}
     >
       <div className="agent-dialog-header">
@@ -781,10 +846,9 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
             warnings={warnings}
             warningsAccepted={activeSession.warningsAccepted}
             canUsePlan={canUsePlan}
-            safeSubject={props.context.subjectKind === "safe"}
             isSubmitting={props.isSubmitting}
+            safeSubject={props.context.subjectKind === "safe"}
             onAcceptWarnings={(value) => updateActiveSession((session) => ({ ...session, warningsAccepted: value }))}
-            onExport={() => activeSession.executablePlan && props.onExportPlan(activeSession.executablePlan)}
             onSubmit={() => void submitActivePlan()}
           />
         )}
@@ -803,7 +867,7 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
               placeholder={canChat ? props.t.agentPlaceholder : authStatusView.body}
               disabled={!canChat}
               onChange={(event) => {
-                setInput(event.currentTarget.value)
+                setComposerText(event.currentTarget.value)
                 resizeComposer(event.currentTarget)
               }}
               onKeyDown={handleComposerKeyDown}
@@ -1052,7 +1116,6 @@ function AgentPlanCard(props: {
   isSubmitting: boolean
   safeSubject: boolean
   onAcceptWarnings: (value: boolean) => void
-  onExport: () => void
   onSubmit: () => void
 }) {
   const intentLabel = describeIntent(props.draft.intent)
@@ -1125,14 +1188,14 @@ function AgentPlanCard(props: {
           type="button"
           className="primary-button"
           disabled={!props.canUsePlan || props.isSubmitting}
-          onClick={props.safeSubject ? props.onExport : props.onSubmit}
+          onClick={props.onSubmit}
         >
           {props.isSubmitting
             ? props.t.submitting
             : props.safeSubject
-              ? props.t.exportSafePayload
+              ? props.t.agentReviewSafeAction
               : props.t.agentConfirmAction}
-          {!props.isSubmitting && !props.safeSubject && <Play size={14} />}
+          {!props.isSubmitting && <Play size={14} />}
         </button>
       </div>
     </article>
@@ -1149,6 +1212,7 @@ function describeIntent(intent: AgentIntent) {
 
 function createSession(title: string): AgentSession {
   return {
+    composerText: "",
     draft: null,
     draftKey: "",
     executablePlan: null,
@@ -1166,12 +1230,12 @@ function createMessage(role: AgentChatMessage["role"], content: string, isLoadin
 
 function loadStoredSessions(fallbackTitle: string): AgentSession[] {
   if (typeof window === "undefined") return [createSession(fallbackTitle)]
-  return readStoredAgentSessions(window.localStorage.getItem(agentSessionsStorageKey), fallbackTitle) as AgentSession[]
+  return readStoredAgentSessions(readStorageText(appStorageKeys.agentSessions), fallbackTitle) as AgentSession[]
 }
 
 function loadStoredActiveSessionId(sessions: AgentSession[]): string {
   if (typeof window !== "undefined") {
-    const stored = window.localStorage.getItem(agentActiveSessionStorageKey)
+    const stored = readStorageText(appStorageKeys.agentActiveSession)
     if (stored && sessions.some((session) => session.id === stored)) return stored
   }
   return sessions[0]?.id ?? createId()
@@ -1216,10 +1280,20 @@ function translateAgentRisk(risk: AgentRisk, t: MessageBundle) {
   if (risk.code === "no-claimable-withdrawal") return t.noClaimableWithdrawal
   if (risk.code === "reward-proof-required") return t.agentRewardProofRequired
   if (risk.code === "merkle-root-mismatch") return t.merkleMismatch
+  if (risk.code === "no-claimable-rewards-direct-stake") return t.agentNoRewardsCanStake
   if (risk.code === "no-claimable-rewards") return t.noProof
   if (risk.code === "delayed-phase") return t.agentDelayedPhaseRisk
   if (risk.code === "compile-failed") return t.buildPlanFailed
   return translateTxWarning(risk.message, t)
+}
+
+function shouldReplyWithoutActionCard(plan: AgentPlan) {
+  return plan.phases.length === 0 && plan.risks.some((risk) => risk.code === "no-claimable-rewards-direct-stake")
+}
+
+function directGuidanceText(plan: AgentPlan, t: MessageBundle) {
+  const risks = plan.risks.filter((risk) => risk.code !== "validator-selection")
+  return riskText(risks, t)
 }
 
 function translateRiskSeverity(severity: AgentRisk["severity"], t: MessageBundle) {
@@ -1265,6 +1339,31 @@ function agentContextKey(context: AgentContext) {
     context.rewardProof?.merkleRoot ?? "",
     context.liveMerkleRoot ?? "",
   ].join(":")
+}
+
+function isRefreshLiveDataTool(toolName: string, data: unknown) {
+  const record = readRecord(data)
+  return toolName === "refresh_live_staking_context" && record?.clientAction === "refresh-live-staking-context"
+}
+
+function formatLiveAccountSummary(context: AgentContext, t: MessageBundle) {
+  const subject = context.subjectAccount ? compactAddress(context.subjectAccount) : t.notChecked
+  const subjectKind = context.subjectKind === "safe" ? "Safe" : "EOA"
+  const positions = context.validators.filter((validator) => validator.userStake > 0n).slice(0, 5)
+  const positionText = positions.length
+    ? positions.map((validator) => `${validator.label}: ${formatSafe(validator.userStake)} SAFE`).join("\n")
+    : t.agentLiveSummaryNoPositions
+  return [
+    t.agentLiveSummaryTitle,
+    `${t.stakingSubject}: ${subject} (${subjectKind})`,
+    `${t.safeBalance}: ${formatSafe(context.summary.safeBalance)} SAFE`,
+    `${t.totalStaked}: ${formatSafe(context.summary.totalStaked)} SAFE`,
+    `${t.claimableRewards}: ${formatSafe(context.summary.claimableRewards)} SAFE`,
+    `${t.claimableWithdrawals}: ${formatSafe(context.summary.claimableWithdrawals)} SAFE`,
+    `${t.pendingWithdrawals}: ${formatSafe(context.summary.pendingWithdrawals)} SAFE`,
+    `${t.yourStake}:`,
+    positionText,
+  ].join("\n")
 }
 
 function localizeClarification(question: string, t: MessageBundle) {

@@ -320,33 +320,46 @@ textarea:focus-visible {
 }
 
 .topbar-status {
-  position: fixed;
-  top: 34px;
-  right: 36px;
-  z-index: 30;
+  display: grid;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 22px;
+}
+
+.desktop-topbar-status {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
   gap: 10px;
+  margin-top: 0;
+  padding-top: 0;
+}
+
+.mobile-topbar-status {
+  display: none;
 }
 
 .wallet-pill {
   display: inline-flex;
+  min-width: 0;
+  width: 100%;
   align-items: center;
-  gap: 13px;
-  min-height: 64px;
+  gap: 10px;
+  min-height: 52px;
   border: 1px solid var(--line);
-  border-radius: 14px;
-  padding: 0 18px;
+  border-radius: 10px;
+  padding: 8px 11px;
   color: var(--ink);
-  background: #ffffff;
-  box-shadow: var(--shadow-soft);
+  background: #fbfcfd;
+  box-shadow: none;
   animation: fadeScale 360ms ease both;
 }
 
 .wallet-pill > svg:first-child {
-  width: 34px;
-  height: 34px;
-  padding: 7px;
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  padding: 6px;
   border-radius: 999px;
   color: #ffffff;
   background: linear-gradient(135deg, #0bb39f 0%, #122f85 100%);
@@ -354,18 +367,26 @@ textarea:focus-visible {
 
 .wallet-pill span {
   display: flex;
+  flex: 1;
+  min-width: 0;
   align-items: center;
-  gap: 14px;
+  gap: 8px;
 }
 
 .wallet-pill strong {
-  font-size: 16px;
+  overflow: hidden;
+  font-size: 14px;
   font-weight: 850;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .wallet-pill small {
+  overflow: hidden;
   color: var(--muted);
-  font-size: 16px;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sidebar-project {
@@ -410,7 +431,6 @@ textarea:focus-visible {
   justify-content: space-between;
   gap: 20px;
   margin-bottom: 38px;
-  padding-right: 360px;
 }
 
 .dashboard-topline h1 {
@@ -786,12 +806,36 @@ textarea:focus-visible {
 }
 
 .custom-select strong {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
   overflow: hidden;
   color: var(--ink);
   font-size: 16px;
   font-weight: 760;
+}
+
+.custom-select-label-text {
+  min-width: 0;
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.custom-select-badge {
+  margin-left: 12px;
+  flex: 0 0 auto;
+  border: 1px solid rgba(0, 136, 121, 0.2);
+  border-radius: 999px;
+  padding: 2px 7px;
+  color: #007a6d;
+  background: rgba(0, 136, 121, 0.09);
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 800;
+  line-height: 1.2;
 }
 
 .custom-select small {
@@ -963,6 +1007,44 @@ textarea:focus-visible {
 .language-pill {
   min-width: 78px;
   font-weight: 800;
+}
+
+.topbar-status .language-pill {
+  width: 100%;
+  justify-content: space-between;
+  min-height: 42px;
+  border-radius: 10px;
+  background: #fbfcfd;
+}
+
+.desktop-topbar-status .language-pill {
+  width: auto;
+  min-width: 74px;
+  border-radius: 999px;
+  background: #ffffff;
+}
+
+.desktop-topbar-status .wallet-pill {
+  width: auto;
+  min-width: 214px;
+  min-height: 46px;
+  border-radius: 999px;
+  padding: 7px 12px 7px 9px;
+  background: #ffffff;
+  box-shadow: var(--shadow-soft);
+}
+
+.desktop-topbar-status .wallet-pill > svg:first-child {
+  width: 28px;
+  height: 28px;
+}
+
+.desktop-topbar-status .wallet-pill strong {
+  max-width: 76px;
+}
+
+.desktop-topbar-status .wallet-pill small {
+  max-width: 92px;
 }
 
 .language-menu-wrap {
@@ -2960,10 +3042,6 @@ textarea:focus-visible {
     grid-column: auto;
   }
 
-  .dashboard-topline {
-    padding-right: 280px;
-  }
-
   .validator-header,
   .validator-row {
     min-width: 1000px;
@@ -2986,9 +3064,10 @@ textarea:focus-visible {
 
   .topbar {
     position: sticky;
+    top: 0;
+    z-index: 40;
     width: 100vw;
     max-width: 100vw;
-    overflow: hidden;
     height: auto;
     border-right: 0;
     border-bottom: 1px solid var(--line);
@@ -3041,20 +3120,38 @@ textarea:focus-visible {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .topbar-menu {
-    grid-column: 1 / -1;
+  .desktop-topbar-status {
     display: none;
-    margin-top: 18px;
+  }
+
+  .mobile-topbar-status {
+    display: grid;
+  }
+
+  .topbar-menu {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 12px;
+    left: 12px;
+    z-index: 45;
+    display: none;
+    margin-top: 0;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 14px;
+    background: #ffffff;
+    box-shadow: var(--shadow);
   }
 
   .topbar-menu.open {
     display: grid;
+    gap: 14px;
   }
 
   .topbar-status {
-    position: static;
     display: grid;
-    margin-top: 16px;
+    margin-top: 0;
+    padding-top: 0;
   }
 
   .language-pill,

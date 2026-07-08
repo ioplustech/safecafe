@@ -4,14 +4,14 @@ import type { Address } from "viem"
 import { CHAIN_ID, compactAddress, formatSafe } from "../protocol"
 import { merkleLabel } from "./formatters"
 import type { MessageBundle } from "./i18n"
-import type { DataStatus, Modal } from "./types"
+import type { DataStatus, DiscoveredSafe, Modal } from "./types"
 import { ChecklistRow, CustomSelect, KeyValue, Tooltip } from "./ui"
 
 export function DetailModal(props: {
   account: Address | null
   subjectAccount: Address | null
   subjectKind: "self" | "safe"
-  discoveredSafes: Address[]
+  discoveredSafes: DiscoveredSafe[]
   safeDiscoveryError: string
   safeDiscoveryStatus: "failed" | "idle" | "loading" | "ready"
   copyText: (value: string) => Promise<void>
@@ -27,7 +27,7 @@ export function DetailModal(props: {
   const { account, dataStatus, modal, onClose, subjectAccount, subjectKind, t } = props
   const [subjectInput, setSubjectInput] = useState(subjectKind === "safe" ? (subjectAccount ?? "") : "")
   const dialogRef = useRef<HTMLDivElement>(null)
-  const closeButtonRef = useRef<HTMLButtonElement>(null)
+  const selectedDiscoveredSafe = findDiscoveredSafe(props.discoveredSafes, subjectAccount)
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose()
@@ -38,7 +38,7 @@ export function DetailModal(props: {
   }, [onClose])
 
   useEffect(() => {
-    const frame = window.requestAnimationFrame(() => closeButtonRef.current?.focus())
+    const frame = window.requestAnimationFrame(() => dialogRef.current?.focus())
     return () => window.cancelAnimationFrame(frame)
   }, [])
 
@@ -139,7 +139,7 @@ export function DetailModal(props: {
         <AddressRow
           label={t.stakingSubject}
           address={subjectAccount}
-          suffix={subjectKind === "safe" ? "Safe" : "EOA"}
+          suffix={subjectKind === "safe" ? (formatSafeMultisigBadge(selectedDiscoveredSafe, t) ?? "Safe") : "EOA"}
           fallback={t.notChecked}
           copyLabel={t.copy}
           openLabel={t.openExplorer}
@@ -157,9 +157,10 @@ export function DetailModal(props: {
               props.onRefreshSubject(value)
             }}
             options={props.discoveredSafes.map((safe, index) => ({
-              value: safe,
+              value: safe.address,
               label: `${t.managedSafeAddress} ${index + 1}`,
-              detail: compactAddress(safe, 10, 8),
+              badge: formatSafeMultisigBadge(safe, t) ?? undefined,
+              detail: compactAddress(safe.address, 10, 8),
             }))}
           />
           <small className="modal-field-note">
@@ -211,6 +212,8 @@ export function DetailModal(props: {
       className="modal-backdrop"
       role="dialog"
       aria-modal="true"
+      aria-label={title}
+      tabIndex={-1}
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onClose()
       }}
@@ -218,14 +221,8 @@ export function DetailModal(props: {
       <div className="modal-card">
         <div className="panel-title">
           <h2>{title}</h2>
-          <Tooltip label={t.closeNotification}>
-            <button
-              ref={closeButtonRef}
-              type="button"
-              className="icon-button"
-              onClick={onClose}
-              aria-label={t.closeNotification}
-            >
+          <Tooltip label={t.closeDialog}>
+            <button type="button" className="icon-button" onClick={onClose} aria-label={t.closeDialog}>
               <X size={16} />
             </button>
           </Tooltip>
@@ -234,6 +231,17 @@ export function DetailModal(props: {
       </div>
     </div>
   )
+}
+
+function findDiscoveredSafe(safes: DiscoveredSafe[], address: Address | null): DiscoveredSafe | null {
+  if (!address) return null
+  const normalizedAddress = address.toLowerCase()
+  return safes.find((safe) => safe.address.toLowerCase() === normalizedAddress) ?? null
+}
+
+function formatSafeMultisigBadge(safe: DiscoveredSafe | null, t: MessageBundle): string | null {
+  if (!safe || safe.threshold === null || safe.ownersCount === null) return null
+  return `${safe.threshold}/${safe.ownersCount} ${t.safeMultisigBadge}`
 }
 
 function AddressRow(props: {

@@ -162,6 +162,25 @@ const agentToolDefinitions: AgentToolDefinition[] = [
   {
     type: "function",
     function: {
+      name: "refresh_live_staking_context",
+      description:
+        "Request the app client to force-refresh live SAFE balance, staking totals, rewards, withdrawals, and validator positions, then update the page. Use this when the user asks for latest, live, realtime, refreshed, or current on-chain account data.",
+      parameters: {
+        type: "object",
+        properties: {
+          reason: {
+            type: "string",
+            description: "Brief reason for refreshing live staking data.",
+          },
+        },
+        required: [],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "list_supported_staking_actions",
       description:
         "List the SAFE staking actions this app can prepare for wallet review, including safety limits around signing and transaction submission.",
@@ -178,7 +197,7 @@ const agentToolDefinitions: AgentToolDefinition[] = [
     function: {
       name: "prepare_staking_action",
       description:
-        "Prepare a structured SAFE staking action intent for the app to compile, simulate, and present for explicit wallet confirmation. Use this for concrete stake, unstake, claim rewards, restake rewards, claim withdrawal, and rebalance requests.",
+        "Prepare a structured SAFE staking action intent for the app to check, simulate, and present as a reviewable action card for explicit wallet confirmation. Use this for concrete stake, unstake, claim rewards, restake rewards, claim withdrawal, and rebalance requests.",
       parameters: {
         type: "object",
         properties: {
@@ -276,7 +295,7 @@ export async function handleAgentApiRequest(request: Request, env: AgentApiEnv):
     })
     return agentResponse(
       parsed.value,
-      "Agent LLM is not configured. I can still draft supported staking plans locally after wallet data is loaded.",
+      "Agent LLM is not configured. I can still prepare supported staking actions locally after wallet data is loaded.",
       "fallback",
       undefined,
       context,
@@ -553,6 +572,23 @@ function executeAgentTool(toolCall: AgentToolCall, context: SanitizedRequest["co
       modelContent: JSON.stringify(data),
     }
   }
+  if (name === "refresh_live_staking_context") {
+    const data = {
+      clientAction: "refresh-live-staking-context",
+      reason: readRefreshReason(toolCall.function.arguments),
+    }
+    return {
+      callId: toolCall.id,
+      name,
+      status: "completed",
+      content: "Requested a live staking data refresh in the app.",
+      data,
+      modelContent: JSON.stringify({
+        ...data,
+        note: "The client app will perform the live refresh, update the page, and show the refreshed account summary to the user.",
+      }),
+    }
+  }
   if (name === "list_supported_staking_actions") {
     const data = {
       actions: ["stake", "unstake", "claim_withdrawal", "claim_rewards", "restake_rewards", "rebalance"],
@@ -600,6 +636,12 @@ function executeAgentTool(toolCall: AgentToolCall, context: SanitizedRequest["co
     data,
     modelContent: JSON.stringify(data),
   }
+}
+
+function readRefreshReason(rawArguments: string) {
+  const args = parseToolArguments(rawArguments)
+  const reason = typeof args?.reason === "string" ? args.reason.trim() : ""
+  return reason.slice(0, 160)
 }
 
 function parsePreparedStakingIntent(
@@ -763,7 +805,7 @@ function streamingAgentResponse(params: {
             upstream: redactUrl(params.base),
           })
           writeFinalEvent(controller, encoder, {
-            content: final.content || "I can help draft a staking plan.",
+            content: final.content || "I can help prepare a staking action for wallet review.",
             source: "llm",
           })
           return
@@ -773,7 +815,7 @@ function streamingAgentResponse(params: {
           upstream: redactUrl(params.base),
         })
         writeFinalEvent(controller, encoder, {
-          content: first.content || "I can help draft a staking plan.",
+          content: first.content || "I can help prepare a staking action for wallet review.",
           source: "llm",
         })
       } catch (error) {
@@ -843,7 +885,7 @@ async function forwardUpstreamStream(
       if (containsUnsafeAgentContent(final)) {
         return {
           content:
-            "I can only help draft a reviewable staking plan. Every on-chain action must be confirmed in your wallet.",
+            "I can only help prepare reviewable staking actions. Every on-chain action must be confirmed in your wallet.",
           thinking: sanitizeOptionalText(thinking),
         }
       }
@@ -1045,7 +1087,7 @@ function buildAgentSystemPrompt() {
     "",
     "Mission:",
     "- Help users understand and operate SAFE staking flows in this app.",
-    "- Turn natural-language staking intent into clear, reviewable implementation plans.",
+    "- Turn natural-language staking intent into clear, reviewable actions.",
     "- Explain what the app can prepare, what the wallet must confirm, and what data is still missing.",
     "- Keep answers concise, practical, and grounded in the provided runtime context.",
     "",
@@ -1068,16 +1110,18 @@ function buildAgentSystemPrompt() {
     "",
     "Tool capabilities available through the app:",
     "- get_staking_context: read the authenticated current SAFE balance, staking totals, rewards, withdrawals, and validator positions.",
+    "- refresh_live_staking_context: ask the app client to force-refresh live account data and update the page before showing the latest account summary.",
     "- list_supported_staking_actions: list the staking actions the app can prepare.",
-    "- prepare_staking_action: convert a concrete user request into a structured staking action intent for the app to compile, simulate, and present for wallet review.",
+    "- prepare_staking_action: convert a concrete user request into a structured staking action intent for the app to check, simulate, and present as an action card for wallet review.",
     "- wallet_confirmation: the user's wallet is the only component that can approve, sign, and submit on-chain actions.",
     "",
     "How to use tool information:",
     "- Call get_staking_context when answering questions about the user's current SAFE balance, staking positions, rewards, withdrawals, or validator exposure.",
+    "- Call refresh_live_staking_context when the user asks for realtime, latest, refreshed, reloaded, current on-chain, or just-updated account data. After calling it, say the app is refreshing and the refreshed summary will be shown by the app.",
     "- Call list_supported_staking_actions when the user asks what you can do.",
     "- Call prepare_staking_action when the user asks for a concrete supported staking action, including preset-style requests such as Claim rewards, Stake 100 SAFE, Restake rewards, or Move stake.",
     "- For Stake 100 SAFE or Restake rewards without a validator, use best-active only if the user has not asked to choose manually. For Move stake without amount/source/destination, ask for the missing details.",
-    "- If a concrete plan is possible, call prepare_staking_action and then explain that the app will compile and simulate it for wallet review.",
+    "- If a concrete action is possible, call prepare_staking_action and then explain that the app will check it, simulate it, and show an action card for wallet review.",
     "- If required data is missing, ask for the single most important missing detail, such as amount, validator, source validator, destination validator, or wallet connection.",
     "- If runtime context says live data is unavailable, do not invent balances, rewards, validators, or eligibility.",
     "- Use stakingSummary and stakingPositions to answer current-position questions directly with the provided SAFE balance, staked SAFE, rewards, withdrawals, and validator exposure.",
@@ -1129,7 +1173,7 @@ function buildAgentRuntimeContext(context: SanitizedRequest["context"]) {
 function unavailableReply(reason: string) {
   void reason
   return {
-    content: "The Agent service is unavailable. Local staking plan checks are still available.",
+    content: "The Agent service is unavailable. Local transaction checks are still available.",
     source: "fallback" as const,
   }
 }
@@ -1322,10 +1366,10 @@ function sanitizeFiniteNumber(value: unknown) {
 }
 
 export function sanitizeAgentContent(content: unknown) {
-  if (typeof content !== "string" || !content.trim()) return "I can help draft a staking plan."
+  if (typeof content !== "string" || !content.trim()) return "I can help prepare a staking action for wallet review."
   const trimmed = content.trim()
   if (containsUnsafeAgentContent(trimmed)) {
-    return "I can only help draft a reviewable staking plan. Every on-chain action must be confirmed in your wallet."
+    return "I can only help prepare reviewable staking actions. Every on-chain action must be confirmed in your wallet."
   }
   return trimmed
 }

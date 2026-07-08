@@ -86,6 +86,18 @@ export function compileAgentPlan(instruction: string, intent: AgentIntent, conte
 
     if (intent.kind === "restake-rewards") {
       const { validator, reason } = resolveAgentValidator(intent.validator, context.validators)
+      if (context.summary.claimableRewards <= 0n) {
+        plan.risks.push(
+          { severity: "info", code: "validator-selection", message: reason },
+          context.summary.safeBalance > 0n
+            ? info(
+                "no-claimable-rewards-direct-stake",
+                "No staking rewards are currently claimable. You can stake from the SAFE balance instead.",
+              )
+            : blocked("no-claimable-rewards", "No staking rewards are currently claimable."),
+        )
+        return plan
+      }
       const amount = resolveAgentAmount(intent.amount, context, validator)
       const rewardsPlan = buildClaimRewardsPhase(context)
       const stakeRisks =
@@ -250,6 +262,10 @@ function buildClaimRewardsPhase(context: AgentContext): { phase: AgentPlanPhase;
 
 function blocked(code: string, message: string): AgentRisk {
   return { severity: "blocked", code, message }
+}
+
+function info(code: string, message: string): AgentRisk {
+  return { severity: "info", code, message }
 }
 
 function stakingSubject(context: AgentContext) {

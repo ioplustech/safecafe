@@ -65,7 +65,7 @@ export async function forwardRpcRequest(
       })
       if (!response.ok) {
         lastError = `RPC upstream returned HTTP ${response.status}.`
-        retryable = true
+        retryable = shouldRetryHttpStatus(response.status)
         if (context) {
           logServerEvent(context, "warn", "rpc.upstream.http_error", {
             attempt: attempts,
@@ -75,7 +75,8 @@ export async function forwardRpcRequest(
             upstream: lastUpstream,
           })
         }
-        continue
+        if (retryable) continue
+        break
       }
       const value = (await response.json()) as { error?: { code?: unknown; data?: unknown; message?: unknown } }
       if (value.error && shouldRetryJsonRpcError(request, value.error)) {
@@ -186,6 +187,10 @@ function shouldRetryJsonRpcError(
   }
 
   return false
+}
+
+function shouldRetryHttpStatus(status: number) {
+  return status === 408 || status === 429 || status >= 500
 }
 
 function isContractExecutionError(message: string) {

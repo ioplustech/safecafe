@@ -1,3 +1,4 @@
+import type { Address } from "viem"
 import type { TxPlanAction, ValidatorInfo } from "../protocol"
 
 export const navItems = ["dashboard", "withdrawals", "rewards", "validators", "settings"] as const
@@ -32,6 +33,12 @@ export type SafePriceState = {
   fetchedAt: number | null
   stale: boolean
   error: string
+}
+
+export type DiscoveredSafe = {
+  address: Address
+  ownersCount: number | null
+  threshold: number | null
 }
 
 export type DataStatus = {

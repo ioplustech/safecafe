@@ -56,6 +56,7 @@ try {
   })
 
   await driver.open()
+  await driver.connectWallet()
   await page.getByRole("button", { name: /Staking Agent/i }).click()
   await page
     .getByRole("textbox", {
@@ -64,10 +65,11 @@ try {
     .fill("hello")
   await page.getByRole("button", { name: /Send|发送|Senden|보내기/i }).click()
 
+  await page.getByRole("button", { name: /Show reasoning|展示 thinking|Argumentation anzeigen|추론 보기/i }).click()
   const thinkingLocator = page.locator(".agent-thinking p").last()
   await thinkingLocator.waitFor({ state: "visible", timeout: 5_000 })
   const thinkingFirst = await thinkingLocator.innerText()
-  assert.equal(thinkingFirst, "Checking wallet context")
+  assert.equal(thinkingFirst.includes("Checking wallet context"), true)
 
   const assistantLocator = page.locator(".agent-message.assistant .agent-message-content").last()
   await page.waitForFunction(() => {
@@ -76,6 +78,10 @@ try {
   })
   const partialContent = await assistantLocator.innerText()
   assert.equal(partialContent, "First streamed sentence. ")
+
+  await page.getByRole("button", { name: /Close agent|关闭 Agent|Agent schließen|Agent 닫기/i }).click()
+  await page.waitForTimeout(260)
+  await page.getByRole("button", { name: /Staking Agent|质押 Agent|Staking-Agent|스테이킹 Agent/i }).click()
 
   await page.waitForFunction(() => {
     const thinking = Array.from(document.querySelectorAll(".agent-thinking p")).at(-1)?.textContent ?? ""
