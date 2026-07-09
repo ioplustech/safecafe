@@ -66,7 +66,7 @@ Configure these environment variables before enabling live account reads, authen
 - `SAFECAFE_RPC_URL` or `SAFECAFE_RPC_URLS`: server-side Ethereum RPC endpoint(s) used by Pages Functions for authenticated RPC, live account data, Safe discovery, and Agent eligibility checks.
 - `SAFECAFE_AUTH_SECRET`: server-side secret used to sign wallet-auth sessions for `/api/rpc/*` and Agent access.
 - `SAFECAFE_RPC_ALLOW_ALL_WALLETS`: set to `false` in production unless you intentionally want signed wallet access without the SAFE/staking eligibility gate.
-- `SAFECAFE_AGENT_AUTH`: set to `true` in production so live Agent calls require the signed wallet session.
+- `VITE_AGENT_AUTH`: set to `true` in production so live Agent calls require the signed wallet session.
 - `SAFECAFE_LLM_API_BASE`: OpenAI-compatible chat completions base URL, kept server-side.
 - `SAFECAFE_LLM_API_MODEL`: model name for the Staking Agent.
 - `SAFECAFE_LLM_API_KEY`: server-side API key for the Agent proxy.
@@ -280,13 +280,13 @@ The project intentionally does not set a strict Content Security Policy yet beca
 ## Latest IPFS Release
 
 - Version: `0.1.0`
-- Commit: `4c87b8db92c32178df0cc61d3d747264ad99e86d`
+- Commit: `e2d6bb02cd6643b32c762d392a3220c78a27cb16`
 - Dirty build: `yes`
-- CID: `bafybeid5igerevatkm46z45thxssenbkeyfbikkip7v5n7mpubvlsst7ji`
-- ENS contenthash: `ipfs://bafybeid5igerevatkm46z45thxssenbkeyfbikkip7v5n7mpubvlsst7ji`
-- Filebase: https://ipfs.filebase.io/ipfs/bafybeid5igerevatkm46z45thxssenbkeyfbikkip7v5n7mpubvlsst7ji/
-- dweb.link: https://bafybeid5igerevatkm46z45thxssenbkeyfbikkip7v5n7mpubvlsst7ji.ipfs.dweb.link/
-- Build manifest: https://ipfs.filebase.io/ipfs/bafybeid5igerevatkm46z45thxssenbkeyfbikkip7v5n7mpubvlsst7ji/release-manifest.json
+- CID: `bafybeifp7i3jbrmmd2tuastqgydqtwoqkiivet6c4wz3mleallmfcqtkwq`
+- ENS contenthash: `ipfs://bafybeifp7i3jbrmmd2tuastqgydqtwoqkiivet6c4wz3mleallmfcqtkwq`
+- Filebase: https://ipfs.filebase.io/ipfs/bafybeifp7i3jbrmmd2tuastqgydqtwoqkiivet6c4wz3mleallmfcqtkwq/
+- dweb.link: https://bafybeifp7i3jbrmmd2tuastqgydqtwoqkiivet6c4wz3mleallmfcqtkwq.ipfs.dweb.link/
+- Build manifest: https://ipfs.filebase.io/ipfs/bafybeifp7i3jbrmmd2tuastqgydqtwoqkiivet6c4wz3mleallmfcqtkwq/release-manifest.json
 - Release record: [releases/ipfs/latest.json](releases/ipfs/latest.json)
 
 After verifying the links, set `safe-staking.eth` contenthash to the ENS contenthash above.

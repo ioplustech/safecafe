@@ -1,6 +1,6 @@
 # Safecafe
 
-**Live Demo:** [safecafe.pages.dev](https://safecafe.pages.dev/)
+**Live:** [safe-staking.eth.limo](https://safe-staking.eth.limo/)
 
 Safecafe is a standalone non-custodial interface for Safenet staking. It includes a web app, CLI, protocol reads, transaction planning, Safe Transaction Builder payload export, and shared utilities in one project.
 
@@ -50,14 +50,68 @@ pnpm test:system
 
 ## Configuration
 
-Create a local `.env` file when you need custom RPC endpoints:
+Copy `.env.example` to `.env` and fill in the values you need. Variables are grouped by purpose below.
 
-```bash
-VITE_RPC_URL=https://your-ethereum-rpc.example
-SAFECAFE_RPC_URL=https://your-ethereum-rpc.example
-```
+### RPC Endpoints
 
-`VITE_RPC_URL` is used by the web app. `SAFECAFE_RPC_URL` is used by the CLI. Never commit private keys or wallet secrets.
+| Variable | Description |
+| --- | --- |
+| `VITE_RPC_URL` | Ethereum RPC endpoint used by the **web app** (e.g. `/api/rpc/ethereum` for the built-in gateway, or an external URL). |
+| `SAFECAFE_RPC_URL` | Ethereum RPC endpoint used by the **CLI** and server-side reads. |
+
+### RPC Gateway Auth
+
+The built-in RPC gateway (`/api/rpc/ethereum`) supports wallet-based session auth. These are required when deploying the gateway in production.
+
+| Variable | Description |
+| --- | --- |
+| `SAFECAFE_AUTH_SECRET` | HMAC-SHA256 key for signing and verifying session tokens. **Required in production.** A fixed fallback is used automatically on `localhost`. |
+| `SAFECAFE_RPC_ALLOW_ALL_WALLETS` | Access policy for the RPC gateway. `false` (default) = only wallets holding SAFE tokens or staking positions can connect. `true` = any wallet that signs a challenge can connect. |
+
+### Staking Agent (LLM)
+
+The Staking Agent (`/api/agent`) uses an OpenAI-compatible LLM upstream for AI-powered staking guidance.
+
+| Variable | Description |
+| --- | --- |
+| `SAFECAFE_LLM_API_BASE` | Base URL of the upstream LLM API (OpenAI-compatible, e.g. `https://api.openai.com/v1`). |
+| `SAFECAFE_LLM_API_MODEL` | Model name to use (e.g. `gpt-4o-mini`). |
+| `SAFECAFE_LLM_API_KEY` | API key for the upstream LLM service. |
+| `SAFECAFE_LLM_TIMEOUT_MS` | Request timeout in milliseconds. Default: `30000`. |
+| `SAFECAFE_LLM_MAX_TOKENS` | Max response tokens per LLM call. Default: `512`. |
+| `SAFECAFE_LLM_HEADER` | Optional identifier sent as `X-Service-Id` header to the upstream LLM for usage tracking. Leave empty to omit. |
+
+### Filebase / IPFS
+
+Used by the release publishing scripts to upload builds to IPFS via Filebase.
+
+| Variable | Description |
+| --- | --- |
+| `FILEBASE_ACCESS_TOKEN` | Filebase API access token. |
+| `FILEBASE_SECRET_KEY` | Filebase S3-compatible secret key. |
+| `FILEBASE_BUCKET` | Filebase IPFS bucket name. Default: `safecafe`. |
+| `FILEBASE_RELEASE_KEY_PREFIX` | Key prefix for release objects in the bucket. Default: `releases`. |
+| `FILEBASE_IPFS_MAX_BYTES` | Maximum upload size in bytes for IPFS publishes. Default: `1500000`. |
+
+### Web App UI
+
+| Variable | Description |
+| --- | --- |
+| `VITE_AGENT_AUTH` | Enable wallet-based auth for the Agent UI and server-side Agent access checks. Set to `true` in production. |
+| `VITE_TOAST_DURATION_MS` | Toast notification display duration in milliseconds. Default: `3600`. |
+| `VITE_AGENT_LAUNCHER_DRAGGABLE` | Allow dragging the agent launcher button. Default: `false`. |
+
+### Testing / Mock
+
+These are for local development and integration tests only. Never enable in production.
+
+| Variable | Description |
+| --- | --- |
+| `SAFECAFE_MOCK_ACCOUNT` | Mock wallet address for local testing. |
+| `SAFECAFE_MOCK_ACCOUNT_LIVE` | Use a mock live account. Default: `false`. |
+| `VITE_MOCK_REWARD_PROOF` | Return mock reward proof data instead of live queries. Default: `false`. |
+
+Never commit `.env` files. `.env.example` is the only environment file intended for git.
 
 ## CLI
 
@@ -92,9 +146,9 @@ Cloudflare Pages is the recommended primary public host. Filebase/IPFS is used f
 <!-- ipfs-latest:start -->
 ## Latest IPFS Release
 
-- CID: `bafybeid5igerevatkm46z45thxssenbkeyfbikkip7v5n7mpubvlsst7ji`
-- ENS contenthash: `ipfs://bafybeid5igerevatkm46z45thxssenbkeyfbikkip7v5n7mpubvlsst7ji`
-- Filebase: https://ipfs.filebase.io/ipfs/bafybeid5igerevatkm46z45thxssenbkeyfbikkip7v5n7mpubvlsst7ji/
+- CID: `bafybeifp7i3jbrmmd2tuastqgydqtwoqkiivet6c4wz3mleallmfcqtkwq`
+- ENS contenthash: `ipfs://bafybeifp7i3jbrmmd2tuastqgydqtwoqkiivet6c4wz3mleallmfcqtkwq`
+- Filebase: https://ipfs.filebase.io/ipfs/bafybeifp7i3jbrmmd2tuastqgydqtwoqkiivet6c4wz3mleallmfcqtkwq/
 - Release record: [releases/ipfs/latest.json](releases/ipfs/latest.json)
 
 <!-- ipfs-latest:end -->
