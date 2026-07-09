@@ -1788,6 +1788,13 @@ textarea:focus-visible {
   white-space: nowrap;
 }
 
+.modal-field .custom-select-label-text {
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
+  word-break: break-word;
+}
+
 .custom-select-badge {
   margin-left: 12px;
   flex: 0 0 auto;
@@ -1810,6 +1817,10 @@ textarea:focus-visible {
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.modal-field .custom-select small {
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
 }
 
 .custom-select svg {
@@ -3120,6 +3131,11 @@ textarea:focus-visible {
   background: #fff8e8;
 }
 
+.trust-status-card.warning {
+  border-color: rgba(190, 77, 59, 0.22);
+  background: #fff4ef;
+}
+
 .trust-status-icon {
   display: inline-grid;
   width: 34px;
@@ -3132,6 +3148,10 @@ textarea:focus-visible {
 
 .trust-status-card.review .trust-status-icon {
   color: #8a5a12;
+}
+
+.trust-status-card.warning .trust-status-icon {
+  color: #a1452a;
 }
 
 .trust-status-card strong {

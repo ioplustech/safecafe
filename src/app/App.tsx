@@ -81,7 +81,12 @@ import {
   writeStoredWalletSubject,
 } from "./persistence"
 import { readCachedSafePrice, writeCachedSafePrice } from "./priceCache"
-import { compactCid, type ReleaseTrustState, readCurrentReleaseTrust } from "./releaseTrust"
+import {
+  compactCid,
+  createReleaseTrustLoadingState,
+  type ReleaseTrustState,
+  readCurrentReleaseTrust,
+} from "./releaseTrust"
 import { clearRpcSession, ensureRpcSession, readRpcSession } from "./rpcAuth"
 import { fetchSafeUsdPrice } from "./safePriceApi"
 import {
@@ -295,7 +300,7 @@ export function App() {
   const [txProgress, setTxProgress] = useState("")
   const [validatorStakeError, setValidatorStakeError] = useState("")
   const [safePrice, setSafePrice] = useState<SafePriceState>(() => readCachedSafePrice())
-  const [releaseTrust, setReleaseTrust] = useState<ReleaseTrustState>({ kind: "loading", record: null })
+  const [releaseTrust, setReleaseTrust] = useState<ReleaseTrustState>(() => createReleaseTrustLoadingState())
   const [discoveredSafes, setDiscoveredSafes] = useState<DiscoveredSafe[]>([])
   const [safeDiscoveryStatus, setSafeDiscoveryStatus] = useState<"failed" | "idle" | "loading" | "ready">("idle")
   const [safeDiscoveryError, setSafeDiscoveryError] = useState("")
@@ -309,12 +314,30 @@ export function App() {
   const effectiveRpcUrl = customRpcEnabled ? customRpcUrl.trim() : import.meta.env.VITE_RPC_URL
   const releaseRecord = releaseTrust.record
   const releaseCid = releaseRecord?.ipfs?.cid
-  const trustBadgeTone = releaseTrust.kind === "record" && !releaseRecord?.dirty ? "verified" : "review"
-  const trustBadgeValue = releaseCid
-    ? compactCid(releaseCid)
-    : releaseTrust.kind === "loading"
+  const trustBadgeTone =
+    releaseTrust.kind === "record" && !releaseRecord?.dirty && releaseTrust.ens.status === "matched"
+      ? "verified"
+      : "review"
+  const trustBadgeValue =
+    releaseTrust.kind === "loading" || releaseTrust.ens.status === "loading"
       ? t.reading
-      : t.notChecked
+      : releaseTrust.kind !== "record"
+        ? t.notChecked
+        : releaseTrust.ens.status === "matched"
+          ? releaseRecord?.dirty
+            ? t.trustDirtyBuild
+            : t.trustBadgeVerified
+          : releaseTrust.ens.status === "mismatch"
+            ? t.trustBadgeMismatch
+            : releaseTrust.ens.status === "missing"
+              ? t.trustBadgeNoEns
+              : releaseTrust.ens.status === "unsupported"
+                ? t.trustBadgeUnsupported
+                : releaseTrust.ens.status === "error"
+                  ? t.trustBadgeCheckFailed
+                  : releaseCid
+                    ? compactCid(releaseCid)
+                    : t.notChecked
   const walletBusy = walletStatus === "restoring" || walletStatus === "connecting"
   const walletButtonLabel = account
     ? compactAddress(account, 6, 4)
@@ -826,7 +849,9 @@ export function App() {
       .catch((error) => {
         if (controller.signal.aborted) return
         setDiscoveredSafes((current) =>
-          stakingAccount ? current.filter((safe) => isSameAddress(safe.address, stakingAccount)) : [],
+          stakingAccount && !current.some((safe) => isSameAddress(safe.address, stakingAccount))
+            ? mergeDiscoveredSafes(current, [emptyDiscoveredSafe(stakingAccount)])
+            : current,
         )
         setSafeDiscoveryStatus("failed")
         setSafeDiscoveryError(error instanceof Error ? error.message : t.safeDiscoveryFailed)
@@ -966,13 +991,14 @@ export function App() {
 
   useEffect(() => {
     let cancelled = false
-    readCurrentReleaseTrust().then((nextTrust) => {
+    setReleaseTrust(createReleaseTrustLoadingState())
+    readCurrentReleaseTrust(customRpcEnabled ? effectiveRpcUrl : undefined).then((nextTrust) => {
       if (!cancelled) setReleaseTrust(nextTrust)
     })
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [customRpcEnabled, effectiveRpcUrl])
 
   function selectLocale(nextLocale: Locale) {
     setLocale(nextLocale)
@@ -2094,6 +2120,7 @@ export function App() {
           modal={modal}
           onClose={() => setModal(null)}
           openExplorer={openExplorer}
+          releaseTrust={releaseTrust}
           onRefreshSubject={(subject) => {
             const nextSubject = normalizeAddress(subject)
             if (!account || !nextSubject || nextSubject.toLowerCase() === account.toLowerCase()) {

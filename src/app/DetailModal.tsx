@@ -6,9 +6,9 @@ import { merkleLabel } from "./formatters"
 import type { MessageBundle } from "./i18n"
 import {
   compactCid,
+  type EnsContenthashState,
   findReleaseFile,
   type ReleaseTrustState,
-  readCurrentReleaseTrust,
   safeStakingEnsName,
   safeStakingEthLimoUrl,
 } from "./releaseTrust"
@@ -28,13 +28,13 @@ export function DetailModal(props: {
   modal: NonNullable<Modal>
   onClose: () => void
   openExplorer: (address: Address) => void
+  releaseTrust: ReleaseTrustState
   onRefreshSubject: (subject: string) => void
   onUseSignerAsSubject: () => void
   t: MessageBundle
 }) {
-  const { account, dataStatus, modal, onClose, subjectAccount, subjectKind, t } = props
+  const { account, dataStatus, modal, onClose, releaseTrust, subjectAccount, subjectKind, t } = props
   const [subjectInput, setSubjectInput] = useState(subjectKind === "safe" ? (subjectAccount ?? "") : "")
-  const [releaseTrust, setReleaseTrust] = useState<ReleaseTrustState>({ kind: "loading", record: null })
   const dialogRef = useRef<HTMLDivElement>(null)
   const selectedDiscoveredSafe = findDiscoveredSafe(props.discoveredSafes, subjectAccount)
   useEffect(() => {
@@ -55,18 +55,6 @@ export function DetailModal(props: {
     setSubjectInput(subjectKind === "safe" ? (subjectAccount ?? "") : "")
   }, [subjectAccount, subjectKind])
 
-  useEffect(() => {
-    if (modal.type !== "trust") return
-    let cancelled = false
-    setReleaseTrust({ kind: "loading", record: null })
-    readCurrentReleaseTrust().then((nextTrust) => {
-      if (!cancelled) setReleaseTrust(nextTrust)
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [modal.type])
-
   let title = t.viewReadiness
   let content: ReactNode = <p>{t.readinessDescription}</p>
   if (modal.type === "trust") {
@@ -77,24 +65,14 @@ export function DetailModal(props: {
     const indexFile = findReleaseFile(releaseRecord, "index.html")
     const currentHost = typeof window === "undefined" ? "" : window.location.hostname
     const sourceLabel = currentHost === "safe-staking.eth.limo" ? t.trustSourceEnsIpfs : t.trustSourceMirror
-    const statusLabel =
-      releaseTrust.kind === "record" && !releaseRecord?.dirty ? t.trustStatusVerified : t.trustStatusReview
-    const statusDescription =
-      releaseTrust.kind === "loading"
-        ? t.reading
-        : releaseTrust.kind === "record"
-          ? releaseRecord?.dirty
-            ? t.trustDirtyBuildNotice
-            : t.trustVerifiedNotice
-          : t.trustFootnote
+    const ensContenthashDetail = trustEnsDetail(releaseTrust.ens, t)
+    const [statusLabel, statusDescription, statusTone] = trustStatusSummary(releaseTrust, t)
     const manifestUrl = hasIpfsRecord
       ? `${releaseRecord?.ipfs?.gateways.filebase ?? ""}release-manifest.json`
       : "/release-manifest.json"
     content = (
       <div className="trust-center">
-        <section
-          className={`trust-status-card ${releaseTrust.kind === "record" && !releaseRecord?.dirty ? "verified" : "review"}`}
-        >
+        <section className={`trust-status-card ${statusTone}`}>
           <span className="trust-status-icon">
             <ShieldCheck size={18} />
           </span>
@@ -114,8 +92,8 @@ export function DetailModal(props: {
           <TrustEvidenceStep
             icon={<Link2 size={15} />}
             label={t.trustContenthash}
-            value={releaseRecord?.ipfs?.uri ?? t.notChecked}
-            detail={t.trustContenthashDetail}
+            value={releaseTrust.ens.uri ?? t.notChecked}
+            detail={ensContenthashDetail}
           />
           <TrustEvidenceStep
             icon={<FileJson size={15} />}
@@ -278,9 +256,9 @@ export function DetailModal(props: {
             }}
             options={props.discoveredSafes.map((safe, index) => ({
               value: safe.address,
-              label: `${t.managedSafeAddress} ${index + 1}`,
+              label: safe.address,
               badge: formatSafeMultisigBadge(safe, t) ?? undefined,
-              detail: compactAddress(safe.address, 10, 8),
+              detail: `${t.managedSafeAddress} ${index + 1}`,
             }))}
           />
           <small className="modal-field-note">
@@ -341,11 +319,9 @@ export function DetailModal(props: {
       <div className={`modal-card ${modal.type === "trust" ? "trust-modal-card" : ""}`}>
         <div className="panel-title">
           <h2>{title}</h2>
-          <Tooltip label={t.closeDialog}>
-            <button type="button" className="icon-button" onClick={onClose} aria-label={t.closeDialog}>
-              <X size={16} />
-            </button>
-          </Tooltip>
+          <button type="button" className="icon-button" onClick={onClose} aria-label={t.closeDialog}>
+            <X size={16} />
+          </button>
         </div>
         <div className="modal-body">{content}</div>
       </div>
@@ -372,6 +348,59 @@ function formatSafeSubjectBadge(safe: DiscoveredSafe | null, t: MessageBundle) {
 function compactHash(value: string) {
   if (value.length <= 22) return value
   return `${value.slice(0, 12)}...${value.slice(-10)}`
+}
+
+function trustEnsDetail(ens: EnsContenthashState, t: MessageBundle) {
+  switch (ens.status) {
+    case "matched":
+      return t.trustContenthashMatches
+    case "mismatch":
+      return t.trustContenthashMismatch
+    case "missing":
+      return t.trustContenthashMissing
+    case "unsupported":
+      return t.trustContenthashUnsupported
+    case "error":
+      return t.trustContenthashCheckFailed
+    case "unchecked":
+      return t.trustContenthashUnchecked
+    case "loading":
+      return t.reading
+    default:
+      return t.trustContenthashDetail
+  }
+}
+
+function trustStatusSummary(
+  releaseTrust: ReleaseTrustState,
+  t: MessageBundle,
+): [label: string, description: string, tone: "review" | "verified" | "warning"] {
+  const releaseRecord = releaseTrust.record
+  if (releaseTrust.kind === "loading" || releaseTrust.ens.status === "loading") {
+    return [t.trustStatusReview, t.reading, "review"]
+  }
+  if (releaseTrust.kind !== "record") {
+    return [t.trustStatusReview, t.trustFootnote, "review"]
+  }
+  if (releaseTrust.ens.status === "matched" && !releaseRecord?.dirty) {
+    return [t.trustStatusVerified, t.trustEnsVerifiedNotice, "verified"]
+  }
+  if (releaseTrust.ens.status === "matched" && releaseRecord?.dirty) {
+    return [t.trustStatusReview, t.trustDirtyBuildNotice, "review"]
+  }
+  if (releaseTrust.ens.status === "mismatch") {
+    return [t.trustStatusMismatch, t.trustEnsMismatchNotice, "warning"]
+  }
+  if (releaseTrust.ens.status === "missing") {
+    return [t.trustStatusMissing, t.trustEnsMissingNotice, "warning"]
+  }
+  if (releaseTrust.ens.status === "unsupported") {
+    return [t.trustStatusReview, t.trustEnsUnsupportedNotice, "warning"]
+  }
+  if (releaseTrust.ens.status === "error") {
+    return [t.trustStatusReview, t.trustEnsCheckFailedNotice, "review"]
+  }
+  return [t.trustStatusReview, t.trustVerifiedNotice, "review"]
 }
 
 function TrustEvidenceStep(props: { detail: string; icon: ReactNode; label: string; value: string }) {
