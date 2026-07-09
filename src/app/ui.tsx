@@ -1,5 +1,5 @@
-import { AlertTriangle, Check, CheckCircle2, ChevronDown, Clock3, ExternalLink } from "lucide-react"
-import { type KeyboardEvent, type ReactNode, useEffect, useId, useRef, useState } from "react"
+import { AlertTriangle, Check, CheckCircle2, ChevronDown, Clock3, Copy, ExternalLink } from "lucide-react"
+import { type KeyboardEvent, type MouseEvent, type ReactNode, useEffect, useId, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { formatSafe, formatUsdFromSafe } from "../protocol"
 import type { MessageBundle } from "./i18n"
@@ -173,15 +173,22 @@ export function CustomSelect(props: {
   options: Array<{ value: string; label: string; detail?: string; badge?: string }>
   value: string
   onChange: (value: string) => void
+  optionAction?: {
+    copiedLabel?: string
+    label: string
+    onClick: (value: string) => boolean | Promise<boolean> | Promise<void> | void
+  }
 }) {
   const [open, setOpen] = useState(false)
+  const [copiedOption, setCopiedOption] = useState<string | null>(null)
   const [menuPosition, setMenuPosition] = useState<{
     left: number
     maxHeight: number
     top: number
     width: number
   } | null>(null)
-  const buttonRef = useRef<HTMLButtonElement>(null)
+  const buttonRef = useRef<HTMLDivElement>(null)
+  const copiedTimerRef = useRef<number | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
   const rootRef = useRef<HTMLDivElement>(null)
   const selected = props.options.find((option) => option.value === props.value) ?? props.options[0]
@@ -189,6 +196,13 @@ export function CustomSelect(props: {
   useEffect(() => {
     if (props.disabled && open) setOpen(false)
   }, [open, props.disabled])
+
+  useEffect(
+    () => () => {
+      if (copiedTimerRef.current !== null) window.clearTimeout(copiedTimerRef.current)
+    },
+    [],
+  )
 
   useEffect(() => {
     if (!open) return
@@ -225,25 +239,78 @@ export function CustomSelect(props: {
     }
   }, [open])
 
+  function toggleOpen() {
+    if (props.disabled || props.options.length === 0) return
+    setOpen((value) => !value)
+  }
+
+  function handleTriggerKeyDown(event: KeyboardEvent<HTMLElement>) {
+    if (event.key !== "Enter" && event.key !== " " && event.key !== "ArrowDown") return
+    event.preventDefault()
+    toggleOpen()
+  }
+
+  async function runOptionAction(event: MouseEvent<HTMLButtonElement>, value: string) {
+    event.stopPropagation()
+    if (!props.optionAction) return
+    const result = await props.optionAction.onClick(value)
+    if (result === false) return
+    setCopiedOption(value)
+    if (copiedTimerRef.current !== null) window.clearTimeout(copiedTimerRef.current)
+    copiedTimerRef.current = window.setTimeout(() => {
+      setCopiedOption((current) => (current === value ? null : current))
+      copiedTimerRef.current = null
+    }, 1300)
+  }
+
+  function selectOption(value: string) {
+    if (props.disabled) return
+    props.onChange(value)
+    setOpen(false)
+  }
+
+  function handleOptionKeyDown(event: KeyboardEvent<HTMLDivElement>, value: string) {
+    if (event.key !== "Enter" && event.key !== " ") return
+    event.preventDefault()
+    selectOption(value)
+  }
+
   return (
     <div className={`custom-select ${open ? "open" : ""}`} ref={rootRef}>
-      <button
+      <div
+        className="custom-select-control"
         ref={buttonRef}
-        type="button"
-        aria-expanded={open}
-        aria-label={props.label}
-        disabled={props.disabled || props.options.length === 0}
-        onClick={() => setOpen((value) => !value)}
+        data-disabled={props.disabled || props.options.length === 0 ? "true" : "false"}
       >
-        <span>
-          <strong>
-            <span className="custom-select-label-text">{selected?.label ?? props.label}</span>
-            {selected?.badge && <em className="custom-select-badge">{selected.badge}</em>}
-          </strong>
-          {selected?.detail && <small>{selected.detail}</small>}
-        </span>
-        <ChevronDown size={18} />
-      </button>
+        <button
+          type="button"
+          className="custom-select-value-button"
+          aria-expanded={open}
+          aria-label={props.label}
+          disabled={props.disabled || props.options.length === 0}
+          onClick={toggleOpen}
+          onKeyDown={handleTriggerKeyDown}
+        >
+          <span>
+            <strong>
+              <span className="custom-select-label-text">{selected?.label ?? props.label}</span>
+              {selected?.badge && <em className="custom-select-badge">{selected.badge}</em>}
+            </strong>
+            {selected?.detail && <small>{selected.detail}</small>}
+          </span>
+        </button>
+        <button
+          type="button"
+          className="custom-select-chevron-button"
+          aria-expanded={open}
+          aria-label={props.label}
+          disabled={props.disabled || props.options.length === 0}
+          onClick={toggleOpen}
+          onKeyDown={handleTriggerKeyDown}
+        >
+          <ChevronDown size={18} />
+        </button>
+      </div>
       {open &&
         menuPosition &&
         createPortal(
@@ -260,27 +327,50 @@ export function CustomSelect(props: {
             }}
           >
             {props.options.map((option) => (
-              <button
-                type="button"
-                className={option.value === props.value ? "selected" : ""}
-                disabled={props.disabled}
+              <div
+                className={`custom-select-option ${option.value === props.value ? "selected" : ""}`}
+                data-has-action={props.optionAction ? "true" : "false"}
                 key={option.value}
                 role="option"
+                aria-disabled={props.disabled}
                 aria-selected={option.value === props.value}
-                onClick={() => {
-                  props.onChange(option.value)
-                  setOpen(false)
-                }}
+                tabIndex={props.disabled ? -1 : 0}
+                onClick={() => selectOption(option.value)}
+                onKeyDown={(event) => handleOptionKeyDown(event, option.value)}
               >
-                <span>
-                  <strong>
-                    <span className="custom-select-label-text">{option.label}</span>
-                    {option.badge && <em className="custom-select-badge">{option.badge}</em>}
-                  </strong>
-                  {option.detail && <small>{option.detail}</small>}
-                </span>
-                {option.value === props.value && <Check size={16} />}
-              </button>
+                <div className="custom-select-option-main">
+                  <span>
+                    <span>
+                      <strong>
+                        <span className="custom-select-label-text">{option.label}</span>
+                      </strong>
+                      <span className="custom-select-option-side">
+                        {props.optionAction && (
+                          <Tooltip
+                            label={
+                              copiedOption === option.value
+                                ? (props.optionAction.copiedLabel ?? props.optionAction.label)
+                                : props.optionAction.label
+                            }
+                          >
+                            <button
+                              type="button"
+                              className={`inline-action-button custom-select-option-action ${copiedOption === option.value ? "copied" : ""}`}
+                              aria-label={`${props.optionAction.label} ${option.label}`}
+                              disabled={props.disabled}
+                              onClick={(event) => void runOptionAction(event, option.value)}
+                            >
+                              {copiedOption === option.value ? <Check size={14} /> : <Copy size={14} />}
+                            </button>
+                          </Tooltip>
+                        )}
+                        {option.badge && <em className="custom-select-badge">{option.badge}</em>}
+                      </span>
+                    </span>
+                    {option.detail && <small>{option.detail}</small>}
+                  </span>
+                </div>
+              </div>
             ))}
           </div>,
           document.body,
