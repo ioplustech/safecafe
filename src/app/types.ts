@@ -57,6 +57,7 @@ export type DataStatus = {
 
 export type Modal =
   | { type: "readiness" }
+  | { type: "trust" }
   | { type: "validator"; validator: ValidatorInfo }
   | { type: "data" }
   | { type: "network" }

@@ -1,9 +1,17 @@
-import { ArrowUpRight, Copy, X } from "lucide-react"
+import { ArrowUpRight, Copy, FileJson, GitCommit, Globe2, Link2, ShieldCheck, X } from "lucide-react"
 import { type ReactNode, useEffect, useRef, useState } from "react"
 import type { Address } from "viem"
 import { CHAIN_ID, compactAddress, formatSafe } from "../protocol"
 import { merkleLabel } from "./formatters"
 import type { MessageBundle } from "./i18n"
+import {
+  compactCid,
+  findReleaseFile,
+  type ReleaseTrustState,
+  readCurrentReleaseTrust,
+  safeStakingEnsName,
+  safeStakingEthLimoUrl,
+} from "./releaseTrust"
 import type { DataStatus, DiscoveredSafe, Modal } from "./types"
 import { ChecklistRow, CustomSelect, KeyValue, Tooltip } from "./ui"
 
@@ -26,6 +34,7 @@ export function DetailModal(props: {
 }) {
   const { account, dataStatus, modal, onClose, subjectAccount, subjectKind, t } = props
   const [subjectInput, setSubjectInput] = useState(subjectKind === "safe" ? (subjectAccount ?? "") : "")
+  const [releaseTrust, setReleaseTrust] = useState<ReleaseTrustState>({ kind: "loading", record: null })
   const dialogRef = useRef<HTMLDivElement>(null)
   const selectedDiscoveredSafe = findDiscoveredSafe(props.discoveredSafes, subjectAccount)
   useEffect(() => {
@@ -46,8 +55,119 @@ export function DetailModal(props: {
     setSubjectInput(subjectKind === "safe" ? (subjectAccount ?? "") : "")
   }, [subjectAccount, subjectKind])
 
+  useEffect(() => {
+    if (modal.type !== "trust") return
+    let cancelled = false
+    setReleaseTrust({ kind: "loading", record: null })
+    readCurrentReleaseTrust().then((nextTrust) => {
+      if (!cancelled) setReleaseTrust(nextTrust)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [modal.type])
+
   let title = t.viewReadiness
   let content: ReactNode = <p>{t.readinessDescription}</p>
+  if (modal.type === "trust") {
+    title = t.trustCenterTitle
+    const releaseRecord = releaseTrust.record
+    const hasIpfsRecord = Boolean(releaseRecord?.ipfs?.cid)
+    const manifestFile = findReleaseFile(releaseRecord, "release-manifest.json")
+    const indexFile = findReleaseFile(releaseRecord, "index.html")
+    const currentHost = typeof window === "undefined" ? "" : window.location.hostname
+    const sourceLabel = currentHost === "safe-staking.eth.limo" ? t.trustSourceEnsIpfs : t.trustSourceMirror
+    const statusLabel =
+      releaseTrust.kind === "record" && !releaseRecord?.dirty ? t.trustStatusVerified : t.trustStatusReview
+    const statusDescription =
+      releaseTrust.kind === "loading"
+        ? t.reading
+        : releaseTrust.kind === "record"
+          ? releaseRecord?.dirty
+            ? t.trustDirtyBuildNotice
+            : t.trustVerifiedNotice
+          : t.trustFootnote
+    const manifestUrl = hasIpfsRecord
+      ? `${releaseRecord?.ipfs?.gateways.filebase ?? ""}release-manifest.json`
+      : "/release-manifest.json"
+    content = (
+      <div className="trust-center">
+        <section
+          className={`trust-status-card ${releaseTrust.kind === "record" && !releaseRecord?.dirty ? "verified" : "review"}`}
+        >
+          <span className="trust-status-icon">
+            <ShieldCheck size={18} />
+          </span>
+          <div>
+            <strong>{statusLabel}</strong>
+            <p>{statusDescription}</p>
+          </div>
+        </section>
+
+        <section className="trust-evidence-chain" aria-label={t.trustEvidenceChain}>
+          <TrustEvidenceStep
+            icon={<Globe2 size={15} />}
+            label={t.trustEnsName}
+            value={safeStakingEnsName}
+            detail={sourceLabel}
+          />
+          <TrustEvidenceStep
+            icon={<Link2 size={15} />}
+            label={t.trustContenthash}
+            value={releaseRecord?.ipfs?.uri ?? t.notChecked}
+            detail={t.trustContenthashDetail}
+          />
+          <TrustEvidenceStep
+            icon={<FileJson size={15} />}
+            label={t.trustReleaseManifest}
+            value={manifestFile ? compactHash(manifestFile.sha256) : t.notChecked}
+            detail={t.trustManifestDetail}
+          />
+          <TrustEvidenceStep
+            icon={<GitCommit size={15} />}
+            label={t.trustGitCommit}
+            value={releaseRecord ? compactHash(releaseRecord.commit) : t.notChecked}
+            detail={releaseRecord?.dirty ? t.trustDirtyBuild : t.trustCleanBuild}
+          />
+        </section>
+
+        <section className="trust-key-values">
+          <KeyValue
+            label={t.trustCid}
+            value={releaseRecord?.ipfs?.cid ? compactCid(releaseRecord.ipfs.cid) : t.notChecked}
+          />
+          <KeyValue label={t.version} value={releaseRecord?.version ?? t.notChecked} />
+          <KeyValue label={t.trustBuildCommand} value={releaseRecord?.build.command ?? t.notChecked} />
+          <KeyValue label={t.trustIndexHash} value={indexFile ? compactHash(indexFile.sha256) : t.notChecked} />
+        </section>
+
+        <div className="trust-actions">
+          <a className="soft-button" href={safeStakingEthLimoUrl} target="_blank" rel="noreferrer">
+            <ArrowUpRight size={15} />
+            {t.trustOpenEns}
+          </a>
+          {releaseRecord?.ipfs?.gateways.dweb && (
+            <a className="soft-button" href={releaseRecord.ipfs.gateways.dweb} target="_blank" rel="noreferrer">
+              <ArrowUpRight size={15} />
+              {t.trustOpenGateway}
+            </a>
+          )}
+          <a className="soft-button" href={manifestUrl} target="_blank" rel="noreferrer">
+            <FileJson size={15} />
+            {t.trustOpenManifest}
+          </a>
+          {releaseRecord?.ipfs?.uri && (
+            <button type="button" className="soft-button" onClick={() => props.copyText(releaseRecord.ipfs?.uri ?? "")}>
+              <Copy size={15} />
+              {t.trustCopyUri}
+            </button>
+          )}
+        </div>
+
+        <p className="trust-footnote">{t.trustFootnote}</p>
+      </div>
+    )
+  }
   if (modal.type === "validator") {
     title = modal.validator.label
     content = (
@@ -218,7 +338,7 @@ export function DetailModal(props: {
         if (event.target === event.currentTarget) onClose()
       }}
     >
-      <div className="modal-card">
+      <div className={`modal-card ${modal.type === "trust" ? "trust-modal-card" : ""}`}>
         <div className="panel-title">
           <h2>{title}</h2>
           <Tooltip label={t.closeDialog}>
@@ -247,6 +367,24 @@ function formatSafeMultisigBadge(safe: DiscoveredSafe | null, t: MessageBundle):
 function formatSafeSubjectBadge(safe: DiscoveredSafe | null, t: MessageBundle) {
   const badge = formatSafeMultisigBadge(safe, t)
   return badge ? t.safeSubjectBadge.replace("{badge}", badge) : t.safeWallet
+}
+
+function compactHash(value: string) {
+  if (value.length <= 22) return value
+  return `${value.slice(0, 12)}...${value.slice(-10)}`
+}
+
+function TrustEvidenceStep(props: { detail: string; icon: ReactNode; label: string; value: string }) {
+  return (
+    <div className="trust-evidence-step">
+      <span className="trust-evidence-icon">{props.icon}</span>
+      <div>
+        <small>{props.label}</small>
+        <strong>{props.value}</strong>
+        <em>{props.detail}</em>
+      </div>
+    </div>
+  )
 }
 
 function AddressRow(props: {

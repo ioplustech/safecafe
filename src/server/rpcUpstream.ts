@@ -48,6 +48,7 @@ export async function forwardRpcRequest(
 
   let lastError = "No RPC upstream is configured."
   let lastUpstream: string | undefined
+  let lastNullLookupValue: unknown
   let retryable = false
   let attempts = 0
   for (const url of urls) {
@@ -78,7 +79,10 @@ export async function forwardRpcRequest(
         if (retryable) continue
         break
       }
-      const value = (await response.json()) as { error?: { code?: unknown; data?: unknown; message?: unknown } }
+      const value = (await response.json()) as {
+        error?: { code?: unknown; data?: unknown; message?: unknown }
+        result?: unknown
+      }
       if (value.error && shouldRetryJsonRpcError(request, value.error)) {
         lastError = typeof value.error.message === "string" ? value.error.message : "RPC upstream returned an error."
         retryable = true
@@ -88,6 +92,20 @@ export async function forwardRpcRequest(
             attemptElapsedMs: elapsedMs(attemptStartedAt),
             jsonRpcErrorCode: value.error.code,
             jsonRpcErrorMessage: truncateMessage(value.error.message),
+            method: methodName(request),
+            upstream: lastUpstream,
+          })
+        }
+        continue
+      }
+      if (shouldRetryNullTransactionLookup(request, value)) {
+        lastError = "RPC upstream returned a null transaction lookup result."
+        lastNullLookupValue = value
+        retryable = true
+        if (context) {
+          logServerEvent(context, "warn", "rpc.upstream.null_transaction_lookup", {
+            attempt: attempts,
+            attemptElapsedMs: elapsedMs(attemptStartedAt),
             method: methodName(request),
             upstream: lastUpstream,
           })
@@ -137,6 +155,7 @@ export async function forwardRpcRequest(
       clearTimeout(timer)
     }
   }
+  if (lastNullLookupValue !== undefined) return { ok: true, value: lastNullLookupValue }
   const failure: RpcUpstreamFailure = {
     attempts,
     elapsedMs: elapsedMs(startedAt),
@@ -190,7 +209,15 @@ function shouldRetryJsonRpcError(
 }
 
 function shouldRetryHttpStatus(status: number) {
-  return status === 408 || status === 429 || status >= 500
+  return status === 403 || status === 408 || status === 429 || status >= 500
+}
+
+function shouldRetryNullTransactionLookup(request: JsonRpcRequest, value: { result?: unknown }) {
+  return (
+    (request.method === "eth_getTransactionByHash" || request.method === "eth_getTransactionReceipt") &&
+    "result" in value &&
+    value.result === null
+  )
 }
 
 function isContractExecutionError(message: string) {

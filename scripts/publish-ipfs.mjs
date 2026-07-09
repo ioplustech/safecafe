@@ -10,6 +10,7 @@ const releasesPath = join(process.cwd(), "IPFS_RELEASES.md")
 const cloudflareDocPath = join(process.cwd(), "CLOUDFLARE.md")
 const readmePath = join(process.cwd(), "README.md")
 const releaseRecordsDir = join(process.cwd(), "releases", "ipfs")
+const publicReleaseRecordPath = join(process.cwd(), "public", "release-record.json")
 const managedReleaseFiles = new Set(["release-manifest.json", "release-record.json"])
 const defaultExcludedDistFiles = new Set(["safecafe.png"])
 const env = loadEnv()
@@ -276,6 +277,7 @@ function loadReleaseRecordForSync() {
   const candidates = [
     join(distDir, "release-record.json"),
     join(distDir, "release-manifest.json"),
+    publicReleaseRecordPath,
     join(releaseRecordsDir, "latest.json"),
   ]
   for (const candidate of candidates) {
@@ -293,6 +295,7 @@ function writeReleaseRecords(manifest) {
   const content = `${JSON.stringify(manifest, null, 2)}\n`
   writeFileSync(join(releaseRecordsDir, `${manifest.ipfs.cid}.json`), content)
   writeFileSync(join(releaseRecordsDir, "latest.json"), content)
+  writeFileSync(publicReleaseRecordPath, content)
 }
 
 function updateReleaseRegistry(manifest) {

@@ -85,9 +85,9 @@ Safecafe builds to a static frontend:
 pnpm build:web
 ```
 
-The output in `dist/` can be deployed to Vercel, Cloudflare Pages, IPFS-style static hosting, or any static host that supports SPA fallback routing.
+The output in `dist/` can be deployed to Cloudflare Pages, IPFS-style static hosting, or any static host that supports SPA fallback routing.
 
-Cloudflare Pages is the recommended primary static host. See [CLOUDFLARE.md](CLOUDFLARE.md) for Git-connected deployments, direct Wrangler uploads, headers, routing, and release checks.
+Cloudflare Pages is the recommended primary public host. Filebase/IPFS is used for immutable release snapshots, and `safe-staking.eth` is configured to resolve through `https://safe-staking.eth.limo/` after its ENS contenthash points to the current `ipfs://<CID>`. See [CLOUDFLARE.md](CLOUDFLARE.md) for the full development, Cloudflare deployment, IPFS publishing, ENS update, and verification flow.
 
 <!-- ipfs-latest:start -->
 ## Latest IPFS Release

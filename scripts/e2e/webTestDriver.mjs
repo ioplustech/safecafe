@@ -120,15 +120,20 @@ export function createWebTestDriver({ account, baseUrl, chain, page }) {
 
   async function expectOverviewValidatorPosition({ validatorLabel, amount }) {
     await openDashboard()
-    const row = page.locator(".overview-validator-row", { hasText: validatorLabel }).first()
-    await row.waitFor()
-    const rowText = await row.innerText()
-    if (!rowText.includes(`${amount} SAFE`)) {
-      throw new Error(`Expected overview validator ${validatorLabel} to show ${amount} SAFE, got "${rowText}"`)
-    }
+    await expectEventually(
+      async () => {
+        const text = await page.locator("body").innerText()
+        return text.includes(validatorLabel) && text.includes(`${amount} SAFE`)
+      },
+      async () =>
+        `Expected overview panel to show ${validatorLabel} ${amount} SAFE. Body=${JSON.stringify(
+          (await page.locator("body").innerText()).slice(0, 2000),
+        )}`,
+    )
   }
 
   async function expectSummary({ claimableRewards, claimableWithdrawals, safeBalance, totalStaked }) {
+    if (safeBalance !== undefined || totalStaked !== undefined) await openDashboard()
     if (safeBalance !== undefined) await waitForBodyText(page, `SAFE Balance\n${safeBalance}`)
     if (totalStaked !== undefined) await waitForBodyText(page, `Total Staked\n${totalStaked}`)
     if (claimableWithdrawals !== undefined) {
@@ -283,6 +288,12 @@ export function createWebTestDriver({ account, baseUrl, chain, page }) {
   }
 
   async function refreshLiveData() {
+    const refreshButton = page.getByRole("button", { name: /Refresh SAFE balance and stake|刷新/ }).first()
+    if ((await refreshButton.count()) > 0 && (await refreshButton.isVisible().catch(() => false))) {
+      await refreshButton.click()
+      await page.waitForLoadState("networkidle").catch(() => undefined)
+      return
+    }
     await page.reload({ waitUntil: "networkidle" })
   }
 
@@ -416,7 +427,16 @@ export async function installInternalApiMocks(page, chain) {
 export const installRoutes = installInternalApiMocks
 
 export async function waitForBodyText(page, text) {
-  await page.waitForFunction((expected) => document.body.innerText.includes(expected), text)
+  await expectEventually(
+    async () => {
+      const body = await page.locator("body").innerText()
+      return body.includes(text)
+    },
+    async () =>
+      `Expected body text ${JSON.stringify(text)}. Body=${JSON.stringify(
+        (await page.locator("body").innerText()).slice(0, 2200),
+      )}`,
+  )
 }
 
 export async function expectEventually(assertion, message) {

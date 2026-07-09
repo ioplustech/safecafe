@@ -57,7 +57,9 @@ export async function readValidatorMetadata(
 ) {
   const cached = validatorMetadataCache && validatorMetadataCache.expiresAt > Date.now() ? validatorMetadataCache : null
   if (cached?.source === "live") return cached.validators
-  const validators = await fetchValidators(undefined, { fallback: options.fallback ?? false })
+  const validators = await fetchValidators(undefined, {
+    fallback: options.fallback ?? false,
+  })
   if (!options.fallback) {
     validatorMetadataCache = {
       source: "live",

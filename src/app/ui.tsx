@@ -1,15 +1,25 @@
-import { Check, CheckCircle2, ChevronDown, Clock3, ExternalLink } from "lucide-react"
-import { type ReactNode, useEffect, useId, useRef, useState } from "react"
+import { AlertTriangle, Check, CheckCircle2, ChevronDown, Clock3, ExternalLink } from "lucide-react"
+import { type KeyboardEvent, type ReactNode, useEffect, useId, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { formatSafe, formatUsdFromSafe } from "../protocol"
 import type { MessageBundle } from "./i18n"
 
-export function FullPanel({ title, children }: { title: string; children: ReactNode }) {
+export function FullPanel({
+  children,
+  className = "",
+  title,
+}: {
+  children: ReactNode
+  className?: string
+  title?: string
+}) {
   return (
-    <section className="panel full-panel enter">
-      <div className="panel-title">
-        <h2>{title}</h2>
-      </div>
+    <section className={`panel full-panel enter ${className}`.trim()}>
+      {title && (
+        <div className="panel-title">
+          <h2>{title}</h2>
+        </div>
+      )}
       {children}
     </section>
   )
@@ -73,6 +83,15 @@ export function ActionButton(props: {
   )
 }
 
+export function ButtonBusyLabel({ children }: { children: ReactNode }) {
+  return (
+    <span className="button-busy-label" aria-live="polite">
+      <span className="button-spinner" aria-hidden="true" />
+      <span>{children}</span>
+    </span>
+  )
+}
+
 export function Progress({ value, variant = "blue" }: { value: number; variant?: "blue" | "green" }) {
   return (
     <span className="progress-track">
@@ -84,6 +103,68 @@ export function Progress({ value, variant = "blue" }: { value: number; variant?:
 export function StatusBadge({ status, t }: { status: string; t: MessageBundle }) {
   const label = status === "active" ? t.active : status === "inactive" ? t.inactive : status
   return <span className={`status-badge ${status}`}>{label}</span>
+}
+
+export function ConfirmDialog(props: {
+  cancelLabel: string
+  confirmLabel: string
+  message: string
+  onCancel: () => void
+  onConfirm: () => void
+  title: string
+  tone?: "default" | "warning"
+}) {
+  const titleId = useId()
+  const messageId = useId()
+  const cancelRef = useRef<HTMLButtonElement>(null)
+  const dialogRef = useRef<HTMLDivElement>(null)
+  const tone = props.tone ?? "default"
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => cancelRef.current?.focus())
+    return () => window.cancelAnimationFrame(frame)
+  }, [])
+
+  function handleKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault()
+      props.onCancel()
+      return
+    }
+    if (event.key === "Tab") trapDialogFocus(event, dialogRef.current)
+  }
+
+  return createPortal(
+    <div className="confirm-dialog-backdrop" role="presentation">
+      <button type="button" className="confirm-dialog-scrim" aria-label={props.cancelLabel} onClick={props.onCancel} />
+      <div
+        ref={dialogRef}
+        className={`confirm-dialog-card ${tone}`}
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={messageId}
+        onKeyDown={handleKeyDown}
+      >
+        <div className="confirm-dialog-icon" aria-hidden="true">
+          <AlertTriangle size={18} />
+        </div>
+        <div className="confirm-dialog-copy">
+          <h2 id={titleId}>{props.title}</h2>
+          <p id={messageId}>{props.message}</p>
+        </div>
+        <div className="confirm-dialog-actions">
+          <button ref={cancelRef} type="button" className="confirm-dialog-cancel" onClick={props.onCancel}>
+            {props.cancelLabel}
+          </button>
+          <button type="button" className="confirm-dialog-confirm" onClick={props.onConfirm}>
+            {props.confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  )
 }
 
 export function CustomSelect(props: {
@@ -104,6 +185,10 @@ export function CustomSelect(props: {
   const menuRef = useRef<HTMLDivElement>(null)
   const rootRef = useRef<HTMLDivElement>(null)
   const selected = props.options.find((option) => option.value === props.value) ?? props.options[0]
+
+  useEffect(() => {
+    if (props.disabled && open) setOpen(false)
+  }, [open, props.disabled])
 
   useEffect(() => {
     if (!open) return
@@ -178,6 +263,7 @@ export function CustomSelect(props: {
               <button
                 type="button"
                 className={option.value === props.value ? "selected" : ""}
+                disabled={props.disabled}
                 key={option.value}
                 role="option"
                 aria-selected={option.value === props.value}
@@ -309,6 +395,27 @@ function readTooltipAnchorRect(root: HTMLElement | null) {
   if (rect.width > 0 && rect.height > 0) return rect
   const child = Array.from(root.children).find((item): item is HTMLElement => item instanceof HTMLElement)
   return child?.getBoundingClientRect() ?? rect
+}
+
+function trapDialogFocus(event: KeyboardEvent, dialog: HTMLElement | null) {
+  if (!dialog) return
+  const focusable = Array.from(
+    dialog.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
+    ),
+  ).filter((element) => element.offsetParent !== null)
+  if (!focusable.length) return
+  const first = focusable[0]
+  const last = focusable[focusable.length - 1]
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault()
+    last.focus()
+    return
+  }
+  if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault()
+    first.focus()
+  }
 }
 
 export function ChecklistRow({ label, value, ok }: { label: string; value: string; ok: boolean }) {

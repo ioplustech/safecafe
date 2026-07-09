@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react"
-import type { AgentContext } from "../agent"
+import type { AgentContext, UserLlmConfig } from "../agent"
 import type { TxPlan } from "../protocol"
 import { AgentChatDialog } from "./AgentChatDialog"
 import { AgentLogo } from "./AgentLogo"
@@ -16,6 +16,8 @@ export type AgentLauncherProps = {
   t: MessageBundle
   context: AgentContext
   isSubmitting: boolean
+  txProgress: string
+  userLlmConfig: UserLlmConfig | null
   rpcAuthToken: string | null
   onAuthenticateAgent: () => Promise<string | null>
   onConnectWallet: () => Promise<void>
@@ -150,6 +152,8 @@ export function AgentLauncher(props: AgentLauncherProps) {
           anchor={isMobile ? null : position}
           context={props.context}
           isSubmitting={props.isSubmitting}
+          txProgress={props.txProgress}
+          userLlmConfig={props.userLlmConfig}
           rpcAuthToken={props.rpcAuthToken}
           onAuthenticateAgent={props.onAuthenticateAgent}
           onClose={() => setIsOpen(false)}

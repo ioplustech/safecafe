@@ -7,6 +7,7 @@ import {
   Loader2,
   MessageSquare,
   Play,
+  RefreshCw,
   Send,
   ShieldAlert,
   ShieldCheck,
@@ -36,14 +37,16 @@ import {
   requestAgentReplyStream,
   serializeAgentSessions,
   toAgentChatContext,
+  type UserLlmConfig,
 } from "../agent"
 import { compactAddress, formatSafe, type TxPlan } from "../protocol"
 import { AgentLogo } from "./AgentLogo"
+import { type ChainTxStepStatus, chainActionBusyLabel, chainTxStepStatuses } from "./actionStatus"
 import { isAgentAuthRequired } from "./agentAuthConfig"
 import { translateTxLabel, translateTxWarning } from "./formatters"
 import type { MessageBundle } from "./i18n"
 import { appStorageKeys, readStorageText, removeStorageValue, writeStorageJson, writeStorageText } from "./persistence"
-import { Tooltip } from "./ui"
+import { ButtonBusyLabel, ConfirmDialog, Tooltip } from "./ui"
 
 type AgentChatMessage = {
   id: string
@@ -73,7 +76,14 @@ type AgentSession = {
   warningsAccepted: boolean
 }
 
-type AgentAuthStatus = "auth-disabled" | "connected" | "needs-live-data" | "needs-signature" | "no-access" | "no-wallet"
+type AgentAuthStatus =
+  | "auth-disabled"
+  | "connected"
+  | "custom-llm"
+  | "needs-live-data"
+  | "needs-signature"
+  | "no-access"
+  | "no-wallet"
 
 export type AgentChatDialogProps = {
   t: MessageBundle
@@ -82,6 +92,8 @@ export type AgentChatDialogProps = {
   anchor: { x: number; y: number } | null
   context: AgentContext
   isSubmitting: boolean
+  txProgress: string
+  userLlmConfig: UserLlmConfig | null
   rpcAuthToken: string | null
   onAuthenticateAgent: () => Promise<string | null>
   onClose: () => void
@@ -98,6 +110,7 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
   const [isDrafting, setIsDrafting] = useState(false)
   const [isStreaming, setIsStreaming] = useState(false)
   const [isSessionMenuOpen, setIsSessionMenuOpen] = useState(false)
+  const [isStopConfirmOpen, setIsStopConfirmOpen] = useState(false)
   const composerId = useId()
   const requestSeqRef = useRef(0)
   const contextKeyRef = useRef("")
@@ -127,11 +140,18 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
       (warnings.length === 0 || activeSession.warningsAccepted),
   )
   const agentAccess = hasAgentServiceAccess(props.context)
-  const authStatus = resolveAgentAuthStatus(props.context, agentAccess, props.rpcAuthToken)
+  const agentChatRequiresServerAuth = agentAuthRequired && !props.userLlmConfig
+  const authStatus = resolveAgentAuthStatus(
+    props.context,
+    agentAccess,
+    props.rpcAuthToken,
+    agentChatRequiresServerAuth,
+    Boolean(props.userLlmConfig),
+  )
   const authStatusView = getAgentAuthStatusView(authStatus, props.t)
-  const canChat = authStatus === "connected" || authStatus === "auth-disabled"
+  const canChat = authStatus === "connected" || authStatus === "auth-disabled" || authStatus === "custom-llm"
   const canStopAgentRun = isDrafting || isStreaming
-  const isBusy = canStopAgentRun || props.isSubmitting
+  const isAgentBusy = canStopAgentRun
   const lastMessage = activeSession.messages[activeSession.messages.length - 1]
   const scrollSignal = useMemo(
     () =>
@@ -151,18 +171,18 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault()
+        if (isStopConfirmOpen) return
         if (isSessionMenuOpen) {
           setIsSessionMenuOpen(false)
-        } else {
-          props.onClose()
         }
         return
       }
+      if (isStopConfirmOpen) return
       if (event.key === "Tab") trapFocus(event, dialogRef.current)
     }
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
-  }, [isSessionMenuOpen, props.isOpen, props.onClose])
+  }, [isSessionMenuOpen, isStopConfirmOpen, props.isOpen])
 
   useEffect(() => {
     if (!isSessionMenuOpen) return
@@ -185,6 +205,10 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
     void input
     resizeComposer(composerRef.current)
   }, [input, props.isOpen])
+
+  useEffect(() => {
+    if (!canStopAgentRun && isStopConfirmOpen) setIsStopConfirmOpen(false)
+  }, [canStopAgentRun, isStopConfirmOpen])
 
   useEffect(() => {
     if (!sessions.some((session) => session.id === activeSessionId) && sessions[0]) setActiveSessionId(sessions[0].id)
@@ -235,8 +259,6 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
         session.id === activeSessionId
           ? {
               ...session,
-              draft: null,
-              draftKey: "",
               executablePlan: null,
               pendingIntentText: "",
               warningsAccepted: false,
@@ -248,7 +270,7 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
 
   async function send(text = input) {
     const trimmed = text.trim()
-    if (!trimmed || isBusy) return
+    if (!trimmed || isAgentBusy) return
     if (canChat && isConfirmationText(trimmed) && activeSession.executablePlan) {
       setComposerText("")
       resetComposer(composerRef.current)
@@ -264,6 +286,13 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
             ...session.messages,
             createMessage("assistant", resolvePlanNotReadyMessage(props.t, warnings, activeSession.executablePlan)),
           ],
+        }))
+        return
+      }
+      if (props.isSubmitting) {
+        updateActiveSession((session) => ({
+          ...session,
+          messages: [...session.messages, createMessage("assistant", props.t.agentTransactionInProgress)],
         }))
         return
       }
@@ -303,8 +332,8 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
       ? trimmed
       : joinPendingIntent(activeSession.pendingIntentText, trimmed)
     updateActiveSession((session) => ({ ...session, pendingIntentText: "" }))
-    const authToken = agentAuthRequired ? (props.rpcAuthToken ?? (await props.onAuthenticateAgent())) : null
-    if (agentAuthRequired && !authToken) {
+    const authToken = agentChatRequiresServerAuth ? (props.rpcAuthToken ?? (await props.onAuthenticateAgent())) : null
+    if (agentChatRequiresServerAuth && !authToken) {
       updateActiveSession((session) => ({
         ...session,
         messages: [...session.messages, createMessage("assistant", props.t.agentAuthRequired)],
@@ -329,7 +358,7 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
     sessionId: string,
     authToken: string | null,
   ): Promise<{ preparedIntent: AgentIntent | null; source: "fallback" | "llm" | null }> {
-    if (agentAuthRequired && !agentAccess) return { preparedIntent: null, source: null }
+    if (agentChatRequiresServerAuth && !agentAccess) return { preparedIntent: null, source: null }
     const assistantId = createId()
     const controller = new AbortController()
     let preparedIntent: AgentIntent | null = null
@@ -378,6 +407,7 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
           }
         },
         controller.signal,
+        props.userLlmConfig,
       )
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return { preparedIntent, source }
@@ -564,6 +594,7 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
   }
 
   function stopAgentRun() {
+    setIsStopConfirmOpen(false)
     requestSeqRef.current += 1
     executedToolCallsRef.current.clear()
     streamAbortRef.current?.abort()
@@ -687,8 +718,24 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
 
   async function submitActivePlan() {
     const plan = activeSession.executablePlan
-    if (!plan || !canUsePlan) return
+    if (!plan || !canUsePlan || props.isSubmitting) return
     await props.onSubmitPlan(plan)
+  }
+
+  async function regenerateActivePlan() {
+    const draft = activeSession.draft
+    if (!draft || isAgentBusy || props.isSubmitting) return
+    const requestId = requestSeqRef.current + 1
+    requestSeqRef.current = requestId
+    executedToolCallsRef.current.clear()
+    streamAbortRef.current?.abort()
+    streamAbortRef.current = null
+    updateActiveSession((session) => ({
+      ...session,
+      executablePlan: null,
+      warningsAccepted: false,
+    }))
+    await buildAndSimulateAgentPlan(describeIntent(draft.intent), draft.intent, requestId, activeSession.id)
   }
 
   return (
@@ -699,7 +746,7 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
       aria-modal={props.isOpen}
       aria-hidden={!props.isOpen}
       aria-label={props.t.agentTitle}
-      aria-busy={isBusy}
+      aria-busy={isAgentBusy}
       inert={!props.isOpen}
       style={props.anchor ? dialogPosition() : undefined}
     >
@@ -799,7 +846,8 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
           <AgentDisconnectedPanel t={props.t} onConnectWallet={props.onConnectWallet} />
         ) : (
           authStatus !== "connected" &&
-          authStatus !== "auth-disabled" && (
+          authStatus !== "auth-disabled" &&
+          authStatus !== "custom-llm" && (
             <article className="agent-access-panel">
               <AgentAuthStatusIcon status={authStatus} />
               <span>{authStatusView.body}</span>
@@ -815,7 +863,7 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
               props.t.agentPromptRebalance,
             ].map((prompt) => (
               <Tooltip label={!canChat ? authStatusView.body : prompt} key={prompt}>
-                <button type="button" disabled={!canChat || isBusy} onClick={() => void send(prompt)}>
+                <button type="button" disabled={!canChat || isAgentBusy} onClick={() => void send(prompt)}>
                   {prompt}
                 </button>
               </Tooltip>
@@ -857,8 +905,10 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
             warningsAccepted={activeSession.warningsAccepted}
             canUsePlan={canUsePlan}
             isSubmitting={props.isSubmitting}
+            txProgress={props.txProgress}
             safeSubject={props.context.subjectKind === "safe"}
             onAcceptWarnings={(value) => updateActiveSession((session) => ({ ...session, warningsAccepted: value }))}
+            onRegenerate={() => void regenerateActivePlan()}
             onSubmit={() => void submitActivePlan()}
           />
         )}
@@ -885,13 +935,11 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
             {canChat && (
               <button
                 type="button"
-                className={`agent-send-button ${canStopAgentRun ? "is-stopping" : ""} ${
-                  props.isSubmitting && !canStopAgentRun ? "is-loading" : ""
-                }`}
+                className={`agent-send-button ${canStopAgentRun ? "is-stopping" : ""}`}
                 aria-label={canStopAgentRun ? props.t.agentStop : props.t.agentSend}
                 title={canStopAgentRun ? props.t.agentStop : props.t.agentSend}
-                disabled={(props.isSubmitting && !canStopAgentRun) || (!isBusy && !input.trim())}
-                onClick={() => (canStopAgentRun ? stopAgentRun() : void send())}
+                disabled={!isAgentBusy && !input.trim()}
+                onClick={() => (canStopAgentRun ? setIsStopConfirmOpen(true) : void send())}
               >
                 {canStopAgentRun ? (
                   <>
@@ -904,8 +952,6 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
                       aria-hidden="true"
                     />
                   </>
-                ) : props.isSubmitting ? (
-                  <Loader2 size={18} className="agent-send-spinner" aria-hidden="true" />
                 ) : (
                   <Send size={18} className="agent-send-icon" strokeWidth={2.45} aria-hidden="true" />
                 )}
@@ -925,12 +971,24 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
           </button>
         )}
       </div>
+      {isStopConfirmOpen && (
+        <ConfirmDialog
+          title={props.t.agentStopConfirmTitle}
+          message={props.t.agentStopConfirmBody}
+          cancelLabel={props.t.agentStopConfirmCancel}
+          confirmLabel={props.t.agentStopConfirmAction}
+          tone="warning"
+          onCancel={() => setIsStopConfirmOpen(false)}
+          onConfirm={stopAgentRun}
+        />
+      )}
     </section>
   )
 }
 
 function AgentAuthStatusIcon(props: { status: AgentAuthStatus }) {
   if (props.status === "connected") return <ShieldCheck size={17} />
+  if (props.status === "custom-llm") return <ShieldOff size={17} />
   if (props.status === "auth-disabled") return <ShieldOff size={17} />
   if (props.status === "needs-signature") return <ShieldQuestion size={17} />
   return <ShieldAlert size={17} />
@@ -959,11 +1017,14 @@ function resolveAgentAuthStatus(
   context: AgentContext,
   agentAccess: boolean,
   rpcAuthToken: string | null,
+  serverAuthRequired: boolean,
+  hasUserLlmConfig: boolean,
 ): AgentAuthStatus {
   if (!context.account) return "no-wallet"
   if (!context.subjectAccount || !context.liveSnapshot) return "needs-live-data"
-  if (!agentAuthRequired) return "auth-disabled"
   if (!agentAccess) return "no-access"
+  if (hasUserLlmConfig) return "custom-llm"
+  if (!serverAuthRequired) return "auth-disabled"
   if (!rpcAuthToken) return "needs-signature"
   return "connected"
 }
@@ -984,6 +1045,15 @@ function getAgentAuthStatusView(status: AgentAuthStatus, t: MessageBundle) {
       actionLabel: t.agentAuthDisabledTitle,
       body: t.agentAuthDisabledBody,
       title: t.agentAuthDisabledTitle,
+      tone: "off",
+    }
+  }
+  if (status === "custom-llm") {
+    return {
+      actionable: false,
+      actionLabel: t.userLlmAgentReadyTitle,
+      body: t.userLlmAgentReadyBody,
+      title: t.userLlmAgentReadyTitle,
       tone: "off",
     }
   }
@@ -1124,11 +1194,15 @@ function AgentPlanCard(props: {
   warningsAccepted: boolean
   canUsePlan: boolean
   isSubmitting: boolean
+  txProgress: string
   safeSubject: boolean
   onAcceptWarnings: (value: boolean) => void
+  onRegenerate: () => void
   onSubmit: () => void
 }) {
   const intentLabel = describeIntent(props.draft.intent)
+  const txStepLabels = props.executablePlan?.txs.map((tx) => translateTxLabel(tx.label, props.t)) ?? []
+  const txStepStatuses = chainTxStepStatuses(txStepLabels, props.txProgress, props.isSubmitting)
   return (
     <article className={`agent-plan-card ${props.isStale ? "stale" : ""}`}>
       <div className="agent-plan-title">
@@ -1139,10 +1213,10 @@ function AgentPlanCard(props: {
         </span>
       </div>
       {props.isStale && (
-        <p className="agent-risk blocked">
-          <strong>{props.t.agentRiskBlocked}: </strong>
-          {props.t.agentStalePlan}
-        </p>
+        <div className="agent-stale-notice">
+          <AlertTriangle size={15} />
+          <span>{props.t.agentStalePlan}</span>
+        </div>
       )}
       {props.draft.risks.length > 0 && (
         <div className="agent-risk-list">
@@ -1167,8 +1241,12 @@ function AgentPlanCard(props: {
       {props.executablePlan && (
         <div className="agent-tx-list">
           <strong>{props.t.transactionSteps}</strong>
-          {props.executablePlan.txs.map((tx) => (
-            <span key={`${tx.to}-${tx.data}`}>{translateTxLabel(tx.label, props.t)}</span>
+          {props.executablePlan.txs.map((tx, index) => (
+            <AgentTxStep
+              key={`${tx.to}-${tx.data}`}
+              label={txStepLabels[index] ?? translateTxLabel(tx.label, props.t)}
+              status={txStepStatuses[index] ?? "pending"}
+            />
           ))}
           {props.executablePlan.simulation?.status === "failed" && (
             <p className="agent-simulation-error">
@@ -1194,21 +1272,40 @@ function AgentPlanCard(props: {
         {props.t.agentReviewReminder}
       </p>
       <div className="agent-plan-actions">
+        {props.isStale && (
+          <button type="button" className="soft-button" disabled={props.isSubmitting} onClick={props.onRegenerate}>
+            <RefreshCw size={14} />
+            {props.t.agentRegenerateAction}
+          </button>
+        )}
         <button
           type="button"
           className="primary-button"
           disabled={!props.canUsePlan || props.isSubmitting}
           onClick={props.onSubmit}
         >
-          {props.isSubmitting
-            ? props.t.submitting
-            : props.safeSubject
-              ? props.t.agentReviewSafeAction
-              : props.t.agentConfirmAction}
+          {props.isSubmitting ? (
+            <ButtonBusyLabel>{chainActionBusyLabel(props.t, props.txProgress)}</ButtonBusyLabel>
+          ) : props.safeSubject ? (
+            props.t.agentReviewSafeAction
+          ) : (
+            props.t.agentConfirmAction
+          )}
           {!props.isSubmitting && <Play size={14} />}
         </button>
       </div>
     </article>
+  )
+}
+
+function AgentTxStep({ label, status }: { label: string; status: ChainTxStepStatus }) {
+  return (
+    <span className={`agent-tx-step ${status}`}>
+      <span className="agent-tx-step-icon" aria-hidden="true">
+        {status === "done" ? <Check size={12} /> : status === "current" ? <Loader2 size={12} /> : null}
+      </span>
+      <span>{label}</span>
+    </span>
   )
 }
 

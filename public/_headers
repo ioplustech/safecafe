@@ -15,3 +15,6 @@
 
 /release-manifest.json
   Cache-Control: public, max-age=31536000, immutable
+
+/release-record.json
+  Cache-Control: no-cache, must-revalidate

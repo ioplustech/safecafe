@@ -41,3 +41,5 @@ proposal*
 draft
 .wrangler/
 output
+proxies.json
+webshare_proxy.json

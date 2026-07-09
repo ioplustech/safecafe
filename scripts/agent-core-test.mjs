@@ -16,6 +16,7 @@ import {
   shouldRouteClarificationToAgentReply,
   toAgentChatContext,
 } from "../src/agent/index.ts"
+import { chainActionBusyLabel, chainTxStepStatuses } from "../src/app/actionStatus.ts"
 import { readCachedLiveData, writeCachedLiveData } from "../src/app/liveDataCache.ts"
 import {
   appStorageKeys,
@@ -30,6 +31,7 @@ import {
   writeStorageText,
   writeStoredWalletSubject,
 } from "../src/app/persistence.ts"
+import { findPreferredRestakeValidator } from "../src/app/validatorSelection.ts"
 import {
   CONTRACTS,
   createSafenetPublicClient,
@@ -229,6 +231,11 @@ assert.deepEqual(
     { label: "Greenfield", status: "active", userStake: "2900" },
   ],
 )
+assert.equal(findPreferredRestakeValidator(agentContext.validators)?.label, "Gnosis")
+assert.equal(
+  findPreferredRestakeValidator(agentContext.validators.map((validator) => ({ ...validator, userStake: 0n })))?.label,
+  "Core Contributors",
+)
 
 const restakePlan = compileAgentPlan(
   "claim rewards and restake all to best validator",
@@ -379,7 +386,53 @@ assert.equal(createSafenetPublicClient({ authToken: "test-token" }).transport.ur
 assert.equal(createSafenetPublicClient().transport.type, "fallback")
 assert.equal(createSafenetPublicClient({ rpcUrl: "/api/rpc/ethereum" }).transport.type, "http")
 
+const actionStatusMessages = {
+  preparingAction: "Preparing...",
+  simulationStatus: "Pre-flight check",
+  walletConfirmation: "Wallet confirmation",
+  safeExecDirect: "Safe execution",
+  confirmingTx: "Confirming transaction",
+}
+assert.equal(chainActionBusyLabel(actionStatusMessages, ""), "Preparing...")
+assert.equal(chainActionBusyLabel(actionStatusMessages, "Pre-flight check: Approve SAFE"), "Pre-flight check")
+assert.equal(chainActionBusyLabel(actionStatusMessages, "Wallet confirmation: Stake SAFE"), "Wallet confirmation")
+assert.equal(chainActionBusyLabel(actionStatusMessages, "Safe execution: Stake SAFE"), "Wallet confirmation")
+assert.equal(chainActionBusyLabel(actionStatusMessages, "Confirming transaction: Stake SAFE"), "Confirming transaction")
+assert.deepEqual(
+  chainTxStepStatuses(
+    ["Claim Merkle rewards", "Approve SAFE for staking contract", "Stake SAFE to validator"],
+    "Wallet confirmation: Approve SAFE for staking contract",
+    true,
+  ),
+  ["done", "current", "pending"],
+)
+assert.deepEqual(chainTxStepStatuses(["Claim Merkle rewards", "Stake SAFE to validator"], "", false), [
+  "pending",
+  "pending",
+])
+assert.deepEqual(chainTxStepStatuses(["Claim Merkle rewards", "Stake SAFE to validator"], "Preparing...", true), [
+  "current",
+  "pending",
+])
+
 const appSource = readFileSync(new URL("../src/app/App.tsx", import.meta.url), "utf8")
+const viewsSource = readFileSync(new URL("../src/app/views.tsx", import.meta.url), "utf8")
+const uiSource = readFileSync(new URL("../src/app/ui.tsx", import.meta.url), "utf8")
+const releaseTrustSource = readFileSync(new URL("../src/app/releaseTrust.ts", import.meta.url), "utf8")
+const publishIpfsSource = readFileSync(new URL("../scripts/publish-ipfs.mjs", import.meta.url), "utf8")
+const publicReleaseRecord = readFileSync(new URL("../public/release-record.json", import.meta.url), "utf8")
+const sourceReleaseRecord = readFileSync(new URL("../releases/ipfs/latest.json", import.meta.url), "utf8")
+assert.equal(publicReleaseRecord, sourceReleaseRecord, "Static release record should match the source IPFS record.")
+assert.match(
+  releaseTrustSource,
+  /readReleaseJson\("\/release-record\.json", "\/latest\.json"\)/,
+  "Release Trust should read the stable public record and keep the legacy static latest.json fallback.",
+)
+assert.match(
+  publishIpfsSource,
+  /writeFileSync\(publicReleaseRecordPath, content\)/,
+  "IPFS publish sync should keep public/release-record.json available for regular Pages builds.",
+)
 const executeActionSource = appSource.match(
   /async function executeAction[\s\S]*?async function executeClaimRewardsAndStake/,
 )?.[0]
@@ -394,6 +447,16 @@ assert.match(
   /nextAction === "claim-rewards" && !refreshed/,
   "Claim rewards must stop if the forced live refresh fails.",
 )
+assert.match(
+  executeActionSource,
+  /skipRewardCheck: nextAction === "claim-rewards"/,
+  "Manual actions must run local validation before entering loading state.",
+)
+assert.doesNotMatch(
+  executeActionSource,
+  /setTxProgress\(t\.preparingAction\)/,
+  "Local validation failures must not flash the chain progress panel.",
+)
 const executeClaimRewardsAndStakeSource = appSource.match(
   /async function executeClaimRewardsAndStake[\s\S]*?async function simulateTxPlan/,
 )?.[0]
@@ -403,13 +466,223 @@ assert.match(
   /if \(!refreshed\) throw new Error\(t\.liveDataFailed\)/,
   "Claim and restake must stop if the forced live refresh fails.",
 )
+assert.doesNotMatch(
+  executeClaimRewardsAndStakeSource,
+  /setTxProgress\(t\.preparingAction\)/,
+  "Claim-and-restake local validation failures must not flash the chain progress panel.",
+)
+assert.match(appSource, /transactionReceiptPollingIntervalMs = 3_000/)
+assert.equal(
+  [...appSource.matchAll(/waitForTransactionReceipt\(\{[^}]*pollingInterval: transactionReceiptPollingIntervalMs/g)]
+    .length,
+  2,
+)
 const validateActionSource = appSource.match(/function validateAction[\s\S]*?function selectAction/)?.[0]
 assert.ok(validateActionSource, "validateAction source should be locatable")
 assert.match(validateActionSource, /targetAction === "stake" && targetValidator\.status !== "active"/)
+assert.match(validateActionSource, /skipChainCheck/)
+assert.match(validateActionSource, /skipRewardCheck/)
 assert.doesNotMatch(
   validateActionSource,
   /if \(selectedValidator\.status !== "active"\) return t\.inactiveValidator/,
   "Inactive validators must remain unstakeable when the user has stake.",
+)
+const dashboardViewSource = viewsSource.match(/export function DashboardView[\s\S]*?function DecisionMetricsStrip/)?.[0]
+assert.ok(dashboardViewSource, "DashboardView source should be locatable")
+assert.match(
+  dashboardViewSource,
+  /const formControlsDisabled = props\.isSubmitting/,
+  "Dashboard transaction state should be scoped to the active form controls.",
+)
+assert.match(
+  dashboardViewSource,
+  /disabled=\{!props\.accountReady \|\| formControlsDisabled\}/,
+  "Dashboard MAX should stay locked while a transaction is submitting.",
+)
+assert.match(
+  dashboardViewSource,
+  /disabled=\{!hasValidators \|\| formControlsDisabled\}/,
+  "Dashboard validator selectors should stay locked while a transaction is submitting.",
+)
+assert.match(
+  dashboardViewSource,
+  /placeholder="0\.00"\s+disabled=\{formControlsDisabled\}/,
+  "Dashboard amount input should stay locked while a transaction is submitting.",
+)
+assert.match(
+  dashboardViewSource,
+  /<ButtonBusyLabel>\{busyActionLabel\}<\/ButtonBusyLabel>/,
+  "Dashboard transaction buttons should show an inline loading indicator while submitting.",
+)
+assert.match(
+  dashboardViewSource,
+  /<ChainProgressPanel/,
+  "Dashboard transaction progress should use the visual chain progress panel.",
+)
+const rewardsViewSource = viewsSource.match(/export function RewardsView[\s\S]*?export function DocsView/)?.[0]
+assert.ok(rewardsViewSource, "RewardsView source should be locatable")
+assert.doesNotMatch(
+  rewardsViewSource,
+  /props\.selectAction/,
+  "Rewards buttons must not mutate the selected dashboard action before validation succeeds.",
+)
+assert.match(
+  rewardsViewSource,
+  /showClaimRewardsProgress = isClaimingRewards && Boolean\(props\.txProgress\)/,
+  "Rewards claim card should only become visually active after a real transaction progress phase starts.",
+)
+assert.match(
+  rewardsViewSource,
+  /showClaimAndRestakeProgress = isClaimingAndRestaking && Boolean\(props\.txProgress\)/,
+  "Rewards restake card should only become visually active after a real transaction progress phase starts.",
+)
+assert.match(
+  rewardsViewSource,
+  /void props\.executeAction\("claim-rewards", \{ validator: props\.selectedValidator\.address \}\)/,
+  "Claim rewards should execute directly from the rewards page button.",
+)
+assert.match(
+  rewardsViewSource,
+  /void props\.executeClaimRewardsAndStake\(props\.selectedValidator\.address\)/,
+  "Claim-and-restake should execute directly from the rewards page button.",
+)
+const withdrawalsViewSource = viewsSource.match(
+  /export function WithdrawalsView[\s\S]*?export function RewardsView/,
+)?.[0]
+assert.ok(withdrawalsViewSource, "WithdrawalsView source should be locatable")
+assert.doesNotMatch(
+  withdrawalsViewSource,
+  /props\.selectAction/,
+  "Claim withdrawals must not mutate the selected dashboard action before validation succeeds.",
+)
+assert.match(
+  withdrawalsViewSource,
+  /void props\.executeAction\("claim-withdrawal"\)/,
+  "Claim withdrawals should execute directly from the withdrawals page button.",
+)
+assert.match(
+  viewsSource,
+  /function ChainProgressPanel/,
+  "Views should expose a shared visual chain transaction progress panel.",
+)
+assert.match(
+  appSource,
+  /<DashboardView[\s\S]*txPlan=\{txPlan\}/,
+  "Dashboard should receive the active tx plan for visual progress steps.",
+)
+assert.match(
+  appSource,
+  /<RewardsView[\s\S]*txPlan=\{txPlan\}/,
+  "Rewards should receive the active tx plan for visual progress steps.",
+)
+assert.match(
+  appSource,
+  /<WithdrawalsView[\s\S]*txPlan=\{txPlan\}/,
+  "Withdrawals should receive the active tx plan for visual progress steps.",
+)
+assert.match(
+  appSource,
+  /function openValidatorDashboardAction\(nextValidator: Address, nextAction: Extract<Action, "stake" \| "unstake">\)/,
+  "Validator row actions should use a dedicated dashboard handoff.",
+)
+assert.match(
+  appSource,
+  /setDashboardActionFocusRequest\(\(current\) => current \+ 1\)/,
+  "Validator row actions should request focus on the dashboard action form after navigation.",
+)
+assert.match(
+  appSource,
+  /t\.validatorActionPrepared[\s\S]*\.replace\("\{action\}", actionLabel\)[\s\S]*\.replace\("\{validator\}"/,
+  "Validator row actions should explain the dashboard handoff instead of silently jumping pages.",
+)
+assert.match(
+  appSource,
+  /function isAllowedUserLlmApiBase\(url: URL\)[\s\S]*url\.protocol === "https:"[\s\S]*isLoopbackHostname\(url\.hostname\)/,
+  "Custom LLM API Base should require https except loopback development hosts.",
+)
+assert.match(
+  appSource,
+  /onStake=\{\(nextValidator\) => \{\s*openValidatorDashboardAction\(nextValidator, "stake"\)\s*\}\}/,
+  "Validator Stake buttons should hand off to the focused dashboard action form.",
+)
+assert.match(
+  appSource,
+  /onUnstake=\{\(nextValidator\) => \{\s*openValidatorDashboardAction\(nextValidator, "unstake"\)\s*\}\}/,
+  "Validator Unstake buttons should hand off to the focused dashboard action form.",
+)
+assert.match(
+  uiSource,
+  /if \(props\.disabled && open\) setOpen\(false\)/,
+  "Custom selects should close if they become disabled while open.",
+)
+assert.match(uiSource, /function ButtonBusyLabel/, "Shared UI should expose a reusable busy button label.")
+assert.match(
+  viewsSource,
+  /\{t\.prepareStakeAction\}[\s\S]*\{t\.prepareUnstakeAction\}/,
+  "Validator row action buttons should describe preparation, not immediate wallet execution.",
+)
+assert.match(
+  viewsSource,
+  /\{t\.userLlmSecurityNote\}/,
+  "Custom LLM settings should clearly explain local key storage and provider data sharing.",
+)
+
+const agentDialogSource = readFileSync(new URL("../src/app/AgentChatDialog.tsx", import.meta.url), "utf8")
+const agentComposerSource = agentDialogSource.match(
+  /<div className="agent-dialog-footer"[\s\S]*?\n {6}\{isStopConfirmOpen &&/,
+)?.[0]
+assert.ok(agentComposerSource, "Agent composer source should be locatable")
+assert.doesNotMatch(
+  agentComposerSource,
+  /props\.isSubmitting/,
+  "Page transaction loading must not disable Agent chat input, prompts, or send button.",
+)
+const agentPlanCardSource = agentDialogSource.match(/function AgentPlanCard[\s\S]*?function translateRiskSeverity/)?.[0]
+assert.ok(agentPlanCardSource, "Agent plan card source should be locatable")
+assert.match(
+  agentPlanCardSource,
+  /disabled=\{!props\.canUsePlan \|\| props\.isSubmitting\}/,
+  "Agent wallet-confirmation action must stay disabled while another transaction is submitting.",
+)
+assert.match(
+  agentPlanCardSource,
+  /chainActionBusyLabel\(props\.t, props\.txProgress\)/,
+  "Agent wallet-confirmation action should show the current transaction phase while submitting.",
+)
+assert.match(
+  agentPlanCardSource,
+  /<ButtonBusyLabel>\{chainActionBusyLabel\(props\.t, props\.txProgress\)\}<\/ButtonBusyLabel>/,
+  "Agent wallet-confirmation action should include an inline loading indicator while submitting.",
+)
+assert.match(
+  agentPlanCardSource,
+  /chainTxStepStatuses\(txStepLabels, props\.txProgress, props\.isSubmitting\)/,
+  "Agent transaction steps should derive per-step progress from the active transaction progress.",
+)
+assert.match(
+  agentPlanCardSource,
+  /<AgentTxStep/,
+  "Agent transaction steps should render with per-step progress indicators.",
+)
+assert.match(
+  agentDialogSource,
+  /props\.t\.agentTransactionInProgress/,
+  "Agent confirmation text should explain why an action cannot open while another wallet transaction is active.",
+)
+assert.match(agentDialogSource, /ConfirmDialog/, "Agent stop should use the shared confirmation dialog.")
+assert.match(
+  agentDialogSource,
+  /canStopAgentRun \? setIsStopConfirmOpen\(true\) : void send\(\)/,
+  "Agent stop button should ask for confirmation before interrupting an active run.",
+)
+const agentDialogEscapeHandlerSource = agentDialogSource.match(
+  /if \(event\.key === "Escape"\) \{[\s\S]*?return\s+\}/,
+)?.[0]
+assert.ok(agentDialogEscapeHandlerSource, "Agent Escape handler should be locatable")
+assert.doesNotMatch(
+  agentDialogEscapeHandlerSource,
+  /props\.onClose\(\)/,
+  "Escape must not close the Agent dialog; users should close it with the explicit close button.",
 )
 
 assert.doesNotThrow(() => assertSuccessfulReceipt("Stake SAFE", { blockNumber: 1n, status: "success" }))
@@ -495,6 +768,8 @@ let rpcGatewayCalls = 0
 let rpcErrorCalls = 0
 let rpcForbiddenCalls = 0
 let rpcInternalErrorCalls = 0
+let transactionByHashNullRetryCalls = 0
+let transactionReceiptNullRetryCalls = 0
 let chainListCalls = 0
 let rewardProofCalls = 0
 let validatorMetadataCalls = 0
@@ -551,6 +826,34 @@ const mockFetch = async (url, init) => {
   if (body.id === 15 && body.method === "eth_getBalance") {
     rpcForbiddenCalls += 1
     return new Response("forbidden", { status: 403 })
+  }
+  if (body.id === 17 && body.method === "eth_getTransactionByHash") {
+    transactionByHashNullRetryCalls += 1
+    return new Response(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: body.id,
+        result:
+          transactionByHashNullRetryCalls === 1
+            ? null
+            : { blockNumber: "0x7b", hash: body.params[0], transactionIndex: "0x0" },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    )
+  }
+  if (body.id === 18 && body.method === "eth_getTransactionReceipt") {
+    transactionReceiptNullRetryCalls += 1
+    return new Response(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: body.id,
+        result:
+          transactionReceiptNullRetryCalls === 1
+            ? null
+            : { blockNumber: "0x7b", status: "0x1", transactionHash: body.params[0], transactionIndex: "0x0" },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    )
   }
   if (body.method === "eth_blockNumber") {
     rpcGatewayCalls += 1
@@ -1606,6 +1909,48 @@ try {
     assert.equal(transactionLookupRpcJson.result, null, method)
   }
 
+  const retriedTransactionByHash = await handleEthereumRpcGatewayRequest(
+    new Request("http://localhost/api/rpc/ethereum", {
+      method: "POST",
+      headers: { authorization: `Bearer ${session.token}` },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 17,
+        method: "eth_getTransactionByHash",
+        params: [`0x${"64".repeat(32)}`],
+      }),
+    }),
+    {
+      SAFECAFE_AUTH_SECRET: "test-secret",
+      SAFECAFE_RPC_ALLOW_ALL_WALLETS: "true",
+      SAFECAFE_RPC_URLS: "https://rpc-null-one.example,https://rpc-null-two.example",
+    },
+  )
+  const retriedTransactionByHashJson = await retriedTransactionByHash.json()
+  assert.equal(retriedTransactionByHashJson.result.hash, `0x${"64".repeat(32)}`)
+  assert.equal(transactionByHashNullRetryCalls, 2)
+
+  const retriedTransactionReceipt = await handleEthereumRpcGatewayRequest(
+    new Request("http://localhost/api/rpc/ethereum", {
+      method: "POST",
+      headers: { authorization: `Bearer ${session.token}` },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 18,
+        method: "eth_getTransactionReceipt",
+        params: [`0x${"65".repeat(32)}`],
+      }),
+    }),
+    {
+      SAFECAFE_AUTH_SECRET: "test-secret",
+      SAFECAFE_RPC_ALLOW_ALL_WALLETS: "true",
+      SAFECAFE_RPC_URLS: "https://rpc-null-one.example,https://rpc-null-two.example",
+    },
+  )
+  const retriedTransactionReceiptJson = await retriedTransactionReceipt.json()
+  assert.equal(retriedTransactionReceiptJson.result.transactionHash, `0x${"65".repeat(32)}`)
+  assert.equal(transactionReceiptNullRetryCalls, 2)
+
   validatorMetadataTestHooks.resetCache()
   globalThis.fetch = async (url, init) => {
     if (String(url).includes("validator-info.json")) {
@@ -1665,7 +2010,10 @@ try {
   assert.equal(failedRewardProofResponse.status, 502)
   assert.equal((await failedRewardProofResponse.json()).code, "reward_proof_failed")
   assert.equal(
-    await readRewardProof(testAccount.address, undefined, undefined, { bypassCache: true, throwOnFailure: false }),
+    await readRewardProof(testAccount.address, undefined, undefined, {
+      bypassCache: true,
+      throwOnFailure: false,
+    }),
     null,
   )
   globalThis.fetch = mockFetch
@@ -1718,7 +2066,7 @@ try {
   assert.equal(upstreamFailureJson.error.data.reason, "upstream_unavailable")
   assert.equal(upstreamFailureJson.error.data.attempts >= 2, true)
 
-  const nonRetryableUpstreamFailure = await handleEthereumRpcGatewayRequest(
+  const retryableForbiddenUpstreamFailure = await handleEthereumRpcGatewayRequest(
     new Request("http://localhost/api/rpc/ethereum", {
       method: "POST",
       headers: { authorization: `Bearer ${session.token}`, "x-request-id": "test-rpc-non-retryable-failure" },
@@ -1735,10 +2083,11 @@ try {
       SAFECAFE_RPC_URLS: "https://rpc-forbidden-one.example,https://rpc-forbidden-two.example",
     },
   )
-  const nonRetryableUpstreamFailureJson = await nonRetryableUpstreamFailure.json()
-  assert.equal(nonRetryableUpstreamFailureJson.error.data.reason, "upstream_unavailable")
-  assert.equal(nonRetryableUpstreamFailureJson.error.data.attempts, 1)
-  assert.equal(rpcForbiddenCalls, 1)
+  const retryableForbiddenUpstreamFailureJson = await retryableForbiddenUpstreamFailure.json()
+  assert.equal(retryableForbiddenUpstreamFailureJson.error.data.reason, "upstream_unavailable")
+  assert.equal(retryableForbiddenUpstreamFailureJson.error.data.retryable, true)
+  assert.equal(retryableForbiddenUpstreamFailureJson.error.data.attempts >= 2, true)
+  assert.equal(rpcForbiddenCalls >= 2, true)
 
   rpcPoolTestHooks.resetCache()
   const chainListCallsBeforePoolCheck = chainListCalls

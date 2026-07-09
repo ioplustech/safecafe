@@ -18,6 +18,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { toast as sonnerToast, Toaster } from "sonner"
 import { type Address, createWalletClient, custom } from "viem"
+import type { UserLlmConfig } from "../agent"
 import {
   type AccountSnapshot,
   buildSafeExecTransaction,
@@ -27,6 +28,8 @@ import {
   compactAddress,
   createSafenetPublicClient,
   EXPLORER_BASE_URL,
+  fetchRewardProof,
+  fetchValidators,
   findValidator,
   formatSafe,
   formatSafeInput,
@@ -36,6 +39,9 @@ import {
   planClaimWithdrawal,
   planStake,
   planUnstake,
+  readAccountSnapshot,
+  readHealth,
+  readValidatorPositions,
   resolveSafeExecutionMode,
   SAFE_PRICE_CACHE_MS,
   type TxPlan,
@@ -48,7 +54,7 @@ import { SAFECAFE_VERSION } from "../shared/version"
 import { AgentLauncher } from "./AgentLauncher"
 import { DetailModal } from "./DetailModal"
 import { readableSimulationError, safeParsedAmount, stringifyBigInts, translateTxLabel } from "./formatters"
-import { detectLocale, getMessages, isLocale, type Locale, localeOptions } from "./i18n"
+import { detectLocale, getMessages, isLocale, type Locale, localeOptions, type MessageBundle } from "./i18n"
 import {
   accountLiveCacheFreshMs,
   type LiveReadResult,
@@ -64,15 +70,18 @@ import {
   readStorageAddress,
   readStorageEnum,
   readStorageFlag,
+  readStorageJson,
   readStorageText,
   readStoredWalletSubject,
   removeStorageValue,
   writeStorageAddress,
   writeStorageFlag,
+  writeStorageJson,
   writeStorageText,
   writeStoredWalletSubject,
 } from "./persistence"
 import { readCachedSafePrice, writeCachedSafePrice } from "./priceCache"
+import { compactCid, type ReleaseTrustState, readCurrentReleaseTrust } from "./releaseTrust"
 import { clearRpcSession, ensureRpcSession, readRpcSession } from "./rpcAuth"
 import { fetchSafeUsdPrice } from "./safePriceApi"
 import {
@@ -88,12 +97,21 @@ import {
   type SafePriceState,
 } from "./types"
 import { FullPanel, Metric } from "./ui"
+import { compareBigintDesc, findPreferredRestakeValidator } from "./validatorSelection"
 import { DashboardView, DocsView, RewardsView, ValidatorTable, ValidatorToolbar, WithdrawalsView } from "./views"
 import { createWalletIdentity, isSelfSubject, normalizeAddress } from "./walletIdentity"
 
 const navPaths = createPathMap(navItems)
 type ValidatorSort = "stake" | "participation" | "commission" | "name" | "yourStake"
 type WalletStatus = "idle" | "restoring" | "connecting" | "connected"
+type CustomRpcStatus = "checking" | "idle" | "invalid" | "valid"
+type UserLlmStatus = "checking" | "idle" | "invalid" | "valid"
+type UserLlmDraft = {
+  apiBase: string
+  apiKey: string
+  maxTokens: string
+  model: string
+}
 type DashboardAction = Extract<Action, "stake" | "unstake" | "claim-rewards">
 type SubmittingAction = Action | "claim-rewards-and-stake" | null
 type SimulateTxPlanOptions = { requireAuth?: boolean }
@@ -199,7 +217,13 @@ const validatorSortOptions = [
 const toastDurationMs = readToastDurationMs(import.meta.env.VITE_TOAST_DURATION_MS)
 const safeMetadataFailureRetryMs = 60_000
 const safeMetadataSuccessRetryMs = 10 * 60 * 1000
-const estimatedApyPercent = 4.8
+const transactionReceiptPollingIntervalMs = 3_000
+const defaultUserLlmMaxTokens = 512
+const safeTokenUnit = 10n ** 18n
+const safenetBetaRewardTotal = 4_500_000n * safeTokenUnit
+const safenetBetaRewardStartMs = Date.parse("2026-04-07T00:00:00.000Z")
+const safenetBetaRewardEndMs = Date.parse("2026-10-07T00:00:00.000Z")
+const msPerYear = 365 * 24 * 60 * 60 * 1000
 type ToastTone = "success" | "warning" | "info"
 const navMeta: Record<NavItem, { icon: typeof Home }> = {
   dashboard: { icon: Home },
@@ -229,6 +253,7 @@ export function App() {
   const [dashboardAction, setDashboardAction] = useState<DashboardAction>(() =>
     initialDashboardAction(window.location.pathname),
   )
+  const [dashboardActionFocusRequest, setDashboardActionFocusRequest] = useState(0)
   const [validator, setValidator] = useState<Address>(
     () => readStorageAddress(appStorageKeys.selectedValidator) ?? defaultValidator.address,
   )
@@ -257,9 +282,20 @@ export function App() {
   const [liveMerkleRoot, setLiveMerkleRoot] = useState<string | null>(null)
   const [chainId, setChainId] = useState<number | null>(null)
   const [rpcAuthToken, setRpcAuthToken] = useState<string | null>(null)
+  const [customRpcUrl, setCustomRpcUrl] = useState("")
+  const [customRpcDraft, setCustomRpcDraft] = useState(() => readStorageText(appStorageKeys.customRpcUrl)?.trim() ?? "")
+  const [customRpcStatus, setCustomRpcStatus] = useState<CustomRpcStatus>(() =>
+    readStorageText(appStorageKeys.customRpcUrl)?.trim() ? "checking" : "idle",
+  )
+  const [customRpcMessage, setCustomRpcMessage] = useState("")
+  const [userLlmConfig, setUserLlmConfig] = useState<UserLlmConfig | null>(() => readStoredUserLlmConfig())
+  const [userLlmDraft, setUserLlmDraft] = useState<UserLlmDraft>(() => createUserLlmDraft(readStoredUserLlmConfig()))
+  const [userLlmStatus, setUserLlmStatus] = useState<UserLlmStatus>(() => (userLlmConfig ? "valid" : "idle"))
+  const [userLlmMessage, setUserLlmMessage] = useState("")
   const [txProgress, setTxProgress] = useState("")
   const [validatorStakeError, setValidatorStakeError] = useState("")
   const [safePrice, setSafePrice] = useState<SafePriceState>(() => readCachedSafePrice())
+  const [releaseTrust, setReleaseTrust] = useState<ReleaseTrustState>({ kind: "loading", record: null })
   const [discoveredSafes, setDiscoveredSafes] = useState<DiscoveredSafe[]>([])
   const [safeDiscoveryStatus, setSafeDiscoveryStatus] = useState<"failed" | "idle" | "loading" | "ready">("idle")
   const [safeDiscoveryError, setSafeDiscoveryError] = useState("")
@@ -269,6 +305,16 @@ export function App() {
   const connectedAccount = account
   const walletIdentity = useMemo(() => createWalletIdentity(account, stakingAccount), [account, stakingAccount])
   const subjectAccount = walletIdentity.subject
+  const customRpcEnabled = customRpcStatus === "valid" && Boolean(customRpcUrl.trim())
+  const effectiveRpcUrl = customRpcEnabled ? customRpcUrl.trim() : import.meta.env.VITE_RPC_URL
+  const releaseRecord = releaseTrust.record
+  const releaseCid = releaseRecord?.ipfs?.cid
+  const trustBadgeTone = releaseTrust.kind === "record" && !releaseRecord?.dirty ? "verified" : "review"
+  const trustBadgeValue = releaseCid
+    ? compactCid(releaseCid)
+    : releaseTrust.kind === "loading"
+      ? t.reading
+      : t.notChecked
   const walletBusy = walletStatus === "restoring" || walletStatus === "connecting"
   const walletButtonLabel = account
     ? compactAddress(account, 6, 4)
@@ -414,9 +460,10 @@ export function App() {
   const displayValidators = visibleValidators
   const displaySafePriceUsd = safePrice.usd
   const activeValidatorCount = useMemo(() => validators.filter((item) => item.status === "active").length, [validators])
+  const estimatedApyPercent = calculateSafenetBetaApyPercent(validatorPoolTotal)
   const estimatedAnnualRewards = hasLiveAccountData
-    ? (summary.totalStaked * BigInt(Math.round(estimatedApyPercent * 100))) / 10000n
-    : 0n
+    ? calculateEstimatedAnnualRewards(summary.totalStaked, estimatedApyPercent)
+    : null
   const decisionMetrics = {
     activeValidatorCount,
     apyPercent: estimatedApyPercent,
@@ -503,6 +550,32 @@ export function App() {
     setDashboardAction(nextAction)
     writeStorageText(appStorageKeys.dashboardAction, nextAction)
   }, [])
+
+  useEffect(() => {
+    const savedRpcUrl = readStorageText(appStorageKeys.customRpcUrl)?.trim()
+    if (!savedRpcUrl) return
+    let cancelled = false
+    setCustomRpcUrl("")
+    setCustomRpcDraft(savedRpcUrl)
+    setCustomRpcStatus("checking")
+    setCustomRpcMessage(t.customRpcChecking)
+    verifyCustomRpcUrl(savedRpcUrl, t)
+      .then(() => {
+        if (cancelled) return
+        setCustomRpcUrl(savedRpcUrl)
+        setCustomRpcStatus("valid")
+        setCustomRpcMessage(t.customRpcActive)
+      })
+      .catch((error) => {
+        if (cancelled) return
+        setCustomRpcUrl("")
+        setCustomRpcStatus("invalid")
+        setCustomRpcMessage(error instanceof Error ? error.message : t.customRpcFailed)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [t])
 
   useEffect(() => {
     const handlePopState = () => {
@@ -668,7 +741,7 @@ export function App() {
       const requestId = liveReadRequestId.current + 1
       liveReadRequestId.current = requestId
       setLiveError("")
-      const cached = options.forceRefresh ? null : readCachedLiveData(target)
+      const cached = options.forceRefresh || customRpcEnabled ? null : readCachedLiveData(target)
       if (cached) {
         applyLiveReadResult(cached.data, { fetchedAt: cached.fetchedAt, source: "cache" })
         if (Date.now() - cached.fetchedAt <= accountLiveCacheFreshMs) {
@@ -678,9 +751,9 @@ export function App() {
       }
       setIsReadingLive(true)
       try {
-        const nextLiveData = await readLiveData(target, options)
+        const nextLiveData = await readLiveData(target, options, customRpcEnabled ? effectiveRpcUrl : undefined)
         if (liveReadRequestId.current !== requestId) return null
-        const fetchedAt = writeCachedLiveData(target, nextLiveData)
+        const fetchedAt = customRpcEnabled ? Date.now() : writeCachedLiveData(target, nextLiveData)
         applyLiveReadResult(nextLiveData, { fetchedAt, source: "live" })
         return nextLiveData
       } catch (error) {
@@ -694,7 +767,16 @@ export function App() {
         if (liveReadRequestId.current === requestId) setIsReadingLive(false)
       }
     },
-    [applyLiveReadResult, subjectAccount, t.connectToLoad, t.liveDataFailed, t.liveDataRefreshFailedCached, toast],
+    [
+      applyLiveReadResult,
+      customRpcEnabled,
+      effectiveRpcUrl,
+      subjectAccount,
+      t.connectToLoad,
+      t.liveDataFailed,
+      t.liveDataRefreshFailedCached,
+      toast,
+    ],
   )
 
   useEffect(() => {
@@ -862,6 +944,36 @@ export function App() {
     }
   }, [isLanguageMenuOpen])
 
+  useEffect(() => {
+    if (!dashboardActionFocusRequest || activeNav !== "dashboard") return
+    let focusTimeout: number | null = null
+    const animationFrame = window.requestAnimationFrame(() => {
+      const panel = document.querySelector<HTMLElement>(".primary-actions-panel")
+      if (!panel) return
+      panel.scrollIntoView({ behavior: "smooth", block: "center" })
+      focusTimeout = window.setTimeout(() => {
+        const amountInput = panel.querySelector<HTMLInputElement>(".amount-input-wrap input:not(:disabled)")
+        const actionButton = panel.querySelector<HTMLButtonElement>(".form-row .primary-button:not(:disabled)")
+        const focusTarget = amountInput ?? actionButton
+        focusTarget?.focus({ preventScroll: true })
+      }, 160)
+    })
+    return () => {
+      window.cancelAnimationFrame(animationFrame)
+      if (focusTimeout) window.clearTimeout(focusTimeout)
+    }
+  }, [activeNav, dashboardActionFocusRequest])
+
+  useEffect(() => {
+    let cancelled = false
+    readCurrentReleaseTrust().then((nextTrust) => {
+      if (!cancelled) setReleaseTrust(nextTrust)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
   function selectLocale(nextLocale: Locale) {
     setLocale(nextLocale)
     writeStorageText(appStorageKeys.locale, nextLocale)
@@ -875,6 +987,20 @@ export function App() {
     if (window.location.pathname !== nextPath) {
       window.history.pushState(null, "", nextPath)
     }
+  }
+
+  function openValidatorDashboardAction(nextValidator: Address, nextAction: Extract<Action, "stake" | "unstake">) {
+    if (!selectValidatorAction(nextValidator, nextAction)) return
+    const nextValidatorInfo = findValidator(validators, nextValidator)
+    const actionLabel = nextAction === "stake" ? t.prepareStakeAction : t.prepareUnstakeAction
+    toast(
+      t.validatorActionPrepared
+        .replace("{action}", actionLabel)
+        .replace("{validator}", nextValidatorInfo?.label ?? compactAddress(nextValidator)),
+      "info",
+    )
+    navigate("dashboard")
+    setDashboardActionFocusRequest((current) => current + 1)
   }
 
   async function connectWallet() {
@@ -996,6 +1122,98 @@ export function App() {
     return session.token
   }
 
+  function updateCustomRpcDraft(value: string) {
+    setCustomRpcDraft(value)
+    const normalized = value.trim()
+    if (normalized && normalized === customRpcUrl.trim() && customRpcStatus === "valid") {
+      setCustomRpcMessage(t.customRpcActive)
+      return
+    }
+    setCustomRpcStatus("idle")
+    setCustomRpcMessage("")
+  }
+
+  async function saveCustomRpcUrl() {
+    const candidate = customRpcDraft.trim()
+    if (!candidate) {
+      clearCustomRpcUrl()
+      return
+    }
+    setCustomRpcStatus("checking")
+    setCustomRpcMessage(t.customRpcChecking)
+    try {
+      await verifyCustomRpcUrl(candidate, t)
+      setCustomRpcUrl(candidate)
+      setCustomRpcDraft(candidate)
+      setCustomRpcStatus("valid")
+      setCustomRpcMessage(t.customRpcActive)
+      writeStorageText(appStorageKeys.customRpcUrl, candidate)
+      setRpcAuthToken(null)
+      clearRpcSession()
+      toast(t.customRpcSaved, "success")
+    } catch (error) {
+      setCustomRpcStatus("invalid")
+      setCustomRpcMessage(error instanceof Error ? error.message : t.customRpcFailed)
+      toast(error instanceof Error ? error.message : t.customRpcFailed, "warning")
+    }
+  }
+
+  function clearCustomRpcUrl() {
+    setCustomRpcUrl("")
+    setCustomRpcDraft("")
+    setCustomRpcStatus("idle")
+    setCustomRpcMessage("")
+    removeStorageValue(appStorageKeys.customRpcUrl)
+    toast(t.customRpcCleared, "info")
+  }
+
+  function updateUserLlmDraft(field: keyof UserLlmDraft, value: string) {
+    setUserLlmDraft((current) => ({ ...current, [field]: value }))
+    setUserLlmStatus("idle")
+    setUserLlmMessage("")
+  }
+
+  async function saveUserLlmConfig() {
+    const apiBase = userLlmDraft.apiBase.trim()
+    const model = userLlmDraft.model.trim()
+    const apiKey = userLlmDraft.apiKey.trim() || userLlmConfig?.apiKey || ""
+    const maxTokens = readUserLlmMaxTokens(userLlmDraft.maxTokens)
+    try {
+      let parsed: URL
+      try {
+        parsed = new URL(apiBase)
+      } catch {
+        throw new Error(t.userLlmInvalidUrl)
+      }
+      if (!isAllowedUserLlmApiBase(parsed)) throw new Error(t.userLlmHttpsRequired)
+      if (!model) throw new Error(t.userLlmModelRequired)
+      if (!apiKey) throw new Error(t.userLlmKeyRequired)
+      const nextConfig: UserLlmConfig = { apiBase, apiKey, maxTokens, model }
+      setUserLlmStatus("checking")
+      setUserLlmMessage(t.userLlmChecking)
+      await verifyUserLlmConfig(nextConfig, t)
+      setUserLlmConfig(nextConfig)
+      setUserLlmDraft(createUserLlmDraft(nextConfig))
+      setUserLlmStatus("valid")
+      setUserLlmMessage(t.userLlmActive)
+      writeStorageJson(appStorageKeys.userLlmConfig, nextConfig)
+      toast(t.userLlmSaved, "success")
+    } catch (error) {
+      setUserLlmStatus("invalid")
+      setUserLlmMessage(error instanceof Error ? error.message : t.userLlmFailed)
+      toast(error instanceof Error ? error.message : t.userLlmFailed, "warning")
+    }
+  }
+
+  function clearUserLlmConfig() {
+    setUserLlmConfig(null)
+    setUserLlmDraft(createUserLlmDraft(null))
+    setUserLlmStatus("idle")
+    setUserLlmMessage("")
+    removeStorageValue(appStorageKeys.userLlmConfig)
+    toast(t.userLlmCleared, "info")
+  }
+
   function createTxPlan(
     nextAction = action,
     options: ExecuteActionOptions & { liveData?: RefreshedLiveAccountData | null } = {},
@@ -1087,11 +1305,19 @@ export function App() {
       return
     }
     if (isSubmitting) return
+    const localValidation = validateAction(nextAction, {
+      ...options,
+      skipChainCheck: true,
+      skipRewardCheck: nextAction === "claim-rewards",
+    })
+    if (localValidation) {
+      toast(localValidation, "warning")
+      return
+    }
     setAction(nextAction)
     setTxPlan(null)
     setIsSubmitting(true)
     setSubmittingAction(nextAction)
-    setTxProgress(t.preparingAction)
     try {
       await ensureMainnet()
       if (!subjectAccount || !liveSnapshot) throw new Error(t.connectToPlan)
@@ -1125,11 +1351,19 @@ export function App() {
       return
     }
     if (isSubmitting) return
+    const targetValidator = findValidator(validators, targetValidatorAddress)
+    if (!subjectAccount || !liveSnapshot) {
+      toast(t.connectToPlan, "warning")
+      return
+    }
+    if (targetValidator?.status !== "active") {
+      toast(t.inactiveValidator, "warning")
+      return
+    }
     setAction("claim-rewards")
     setTxPlan(null)
     setIsSubmitting(true)
     setSubmittingAction("claim-rewards-and-stake")
-    setTxProgress(t.preparingAction)
     try {
       await ensureMainnet()
       const refreshed = await refreshLiveReads(subjectAccount, { forceRefresh: true })
@@ -1150,7 +1384,7 @@ export function App() {
 
   async function simulateTxPlan(plan: TxPlan, options: SimulateTxPlanOptions = {}): Promise<TxPlan> {
     if (!subjectAccount) return plan
-    const requireAuth = Boolean(options.requireAuth)
+    const requireAuth = Boolean(options.requireAuth && !customRpcEnabled)
     let authToken: string | null = requireAuth ? rpcAuthToken : null
     try {
       if (requireAuth && !authToken) authToken = await ensureRpcAuthTokenForCurrentWallet()
@@ -1164,7 +1398,7 @@ export function App() {
         },
       }
     }
-    const client = createSafenetPublicClient({ authToken, rpcUrl: import.meta.env.VITE_RPC_URL })
+    const client = createSafenetPublicClient({ authToken, rpcUrl: effectiveRpcUrl })
     const txsToSimulate = txsSafeToSimulate(plan)
     try {
       for (const tx of txsToSimulate) {
@@ -1234,9 +1468,9 @@ export function App() {
         chain: ethereumMainnet,
         transport: custom(window.ethereum),
       })
-      const requireAuth = Boolean(options.requireAuth)
+      const requireAuth = Boolean(options.requireAuth && !customRpcEnabled)
       const authToken = requireAuth ? (rpcAuthToken ?? (await ensureRpcAuthTokenForCurrentWallet())) : null
-      const publicClient = createSafenetPublicClient({ authToken, rpcUrl: import.meta.env.VITE_RPC_URL })
+      const publicClient = createSafenetPublicClient({ authToken, rpcUrl: effectiveRpcUrl })
       let confirmedTxCount = 0
       if (!isSelfSubject(walletIdentity)) {
         const safeMode = await resolveSafeExecutionMode({ client: publicClient, safe: subjectAccount, signer: account })
@@ -1267,7 +1501,7 @@ export function App() {
           } catch (error) {
             throw new Error(`${label}: ${readableSimulationError(error, t.simulationFailed)}`)
           }
-          setTxProgress(label)
+          setTxProgress(`${t.walletConfirmation}: ${label}`)
           const hash = await client.sendTransaction({
             account,
             to: tx.to,
@@ -1276,7 +1510,10 @@ export function App() {
           })
           toast(`${t.submittedTx} ${label}: ${compactAddress(hash, 10, 8)}`, "success")
           setTxProgress(`${t.confirmingTx}: ${label}`)
-          const receipt = await publicClient.waitForTransactionReceipt({ hash })
+          const receipt = await publicClient.waitForTransactionReceipt({
+            hash,
+            pollingInterval: transactionReceiptPollingIntervalMs,
+          })
           if (receipt.status !== "success") throw new Error(`${t.transactionFailed} ${label}`)
           confirmedTxCount += 1
           toast(`${t.confirmedTx}: ${label}`, "success")
@@ -1324,7 +1561,10 @@ export function App() {
       })
       toast(`${t.submittedTx} ${label}: ${compactAddress(hash, 10, 8)}`, "success")
       setTxProgress(`${t.confirmingTx}: ${label}`)
-      const receipt = await params.publicClient.waitForTransactionReceipt({ hash })
+      const receipt = await params.publicClient.waitForTransactionReceipt({
+        hash,
+        pollingInterval: transactionReceiptPollingIntervalMs,
+      })
       if (receipt.status !== "success") throw new Error(`${t.transactionFailed} ${label}`)
       confirmedTxCount += 1
       toast(`${t.confirmedTx}: ${label}`, "success")
@@ -1334,14 +1574,18 @@ export function App() {
 
   function validateAction(
     targetAction = action,
-    options: ExecuteActionOptions & { liveData?: RefreshedLiveAccountData | null } = {},
+    options: ExecuteActionOptions & {
+      liveData?: RefreshedLiveAccountData | null
+      skipChainCheck?: boolean
+      skipRewardCheck?: boolean
+    } = {},
   ): string | null {
     const snapshot = options.liveData?.snapshot ?? liveSnapshot
     const proof = options.liveData?.rewardProof ?? rewardProof
     const rewards = options.liveData?.rewards ?? liveRewards ?? 0n
     const merkleRoot = options.liveData?.health.merkleRoot ?? liveMerkleRoot
     if (!subjectAccount || !snapshot) return t.connectToPlan
-    if (chainId !== null && chainId !== CHAIN_ID) return t.wrongNetwork
+    if (!options.skipChainCheck && chainId !== null && chainId !== CHAIN_ID) return t.wrongNetwork
     if (targetAction === "stake" || targetAction === "unstake") {
       const targetValidator = options.validator
         ? (findValidator(validators, options.validator) ?? selectedValidator)
@@ -1353,7 +1597,7 @@ export function App() {
       if (targetAction === "unstake" && targetValidator.userStake < parsedAmount) return t.insufficientValidatorStake
     }
     if (targetAction === "claim-withdrawal" && summary.claimableWithdrawals <= 0n) return t.noClaimableWithdrawal
-    if (targetAction === "claim-rewards") {
+    if (targetAction === "claim-rewards" && !options.skipRewardCheck) {
       if (!proof?.proof || rewards <= 0n) return t.noProof
       if (merkleRoot && proof.merkleRoot.toLowerCase() !== merkleRoot.toLowerCase()) return t.merkleMismatch
     }
@@ -1362,7 +1606,7 @@ export function App() {
 
   function selectAction(nextAction: Action) {
     const preferredValidator =
-      nextAction === "claim-rewards" ? findPreferredValidator("stake") : findPreferredValidator(nextAction)
+      nextAction === "claim-rewards" ? findPreferredRestakeValidator(validators) : findPreferredValidator(nextAction)
     if (preferredValidator && preferredValidator.address !== validator) {
       updateValidator(preferredValidator.address)
     }
@@ -1631,10 +1875,20 @@ export function App() {
                 <ShieldCheck size={15} />
                 <strong>{t.chainIdentity}</strong>
               </span>
-              <button type="button" onClick={() => openExplorer(CONTRACTS.staking)}>
+              <button type="button" className="summary-contract-chip" onClick={() => openExplorer(CONTRACTS.staking)}>
                 {t.stakingContractShort} <ExternalLink size={12} />
               </button>
             </section>
+            <button
+              type="button"
+              className={`summary-trust-proof ${trustBadgeTone}`}
+              onClick={() => setModal({ type: "trust" })}
+              aria-label={t.openTrustCenter}
+            >
+              <ShieldCheck size={13} />
+              <span>{t.frontendProof}</span>
+              <small>{trustBadgeValue}</small>
+            </button>
           </div>
         </div>
         {activeNav === "dashboard" && (
@@ -1680,7 +1934,7 @@ export function App() {
                 </span>
                 <span>
                   <small>{t.currentApy}</small>
-                  <strong>{estimatedApyPercent.toFixed(2)}%</strong>
+                  <strong>{formatPercentOrDash(estimatedApyPercent)}</strong>
                   <em>{t.estimatedAnnualRewards}</em>
                 </span>
               </div>
@@ -1721,12 +1975,13 @@ export function App() {
             stakingAllowance={liveSnapshot?.stakingAllowance ?? 0n}
             summary={displaySummary}
             safePriceUsd={displaySafePriceUsd}
+            txPlan={txPlan}
             decisionMetrics={decisionMetrics}
             validatorPoolTotal={validatorPoolTotal}
           />
         )}
         {activeNav === "validators" && (
-          <FullPanel title={t.stakingDistribution}>
+          <FullPanel>
             <ValidatorToolbar
               activeOnly={showOnlyActive}
               isLoading={isLoadingValidators}
@@ -1754,10 +2009,10 @@ export function App() {
               openExplorer={openExplorer}
               safePriceUsd={displaySafePriceUsd}
               onStake={(nextValidator) => {
-                if (selectValidatorAction(nextValidator, "stake")) navigate("dashboard")
+                openValidatorDashboardAction(nextValidator, "stake")
               }}
               onUnstake={(nextValidator) => {
-                if (selectValidatorAction(nextValidator, "unstake")) navigate("dashboard")
+                openValidatorDashboardAction(nextValidator, "unstake")
               }}
             />
           </FullPanel>
@@ -1771,11 +2026,13 @@ export function App() {
             isSubmitting={isSubmitting}
             restakePreview={rewardsRestakePreview}
             selectedValidator={selectedValidator}
+            setValidator={updateValidator}
             submittingAction={submittingAction}
-            selectAction={selectAction}
             summary={displaySummary}
             dataStatus={dataStatus}
+            txPlan={txPlan}
             txProgress={txProgress}
+            validators={validators}
           />
         )}
         {activeNav === "withdrawals" && (
@@ -1784,13 +2041,33 @@ export function App() {
             executeAction={executeAction}
             isSubmitting={isSubmitting}
             submittingAction={submittingAction}
-            selectAction={selectAction}
             summary={displaySummary}
+            txPlan={txPlan}
             txProgress={txProgress}
             liveSnapshot={liveSnapshot}
           />
         )}
-        {activeNav === "settings" && <DocsView t={t} copyText={copyText} openExplorer={openExplorer} />}
+        {activeNav === "settings" && (
+          <DocsView
+            t={t}
+            copyText={copyText}
+            openExplorer={openExplorer}
+            customRpcUrl={customRpcDraft}
+            customRpcSavedUrl={customRpcUrl}
+            customRpcStatus={customRpcStatus}
+            customRpcMessage={customRpcMessage}
+            onCustomRpcChange={updateCustomRpcDraft}
+            onSaveCustomRpc={() => void saveCustomRpcUrl()}
+            onClearCustomRpc={clearCustomRpcUrl}
+            userLlmDraft={userLlmDraft}
+            userLlmSaved={Boolean(userLlmConfig)}
+            userLlmStatus={userLlmStatus}
+            userLlmMessage={userLlmMessage}
+            onUserLlmChange={updateUserLlmDraft}
+            onSaveUserLlm={saveUserLlmConfig}
+            onClearUserLlm={clearUserLlmConfig}
+          />
+        )}
       </main>
 
       <footer className="footer">
@@ -1853,6 +2130,8 @@ export function App() {
         t={t}
         context={agentContext}
         isSubmitting={isSubmitting}
+        txProgress={txProgress}
+        userLlmConfig={userLlmConfig}
         rpcAuthToken={rpcAuthToken}
         onAuthenticateAgent={authenticateAgent}
         onConnectWallet={connectWallet}
@@ -1867,7 +2146,12 @@ export function App() {
 
 const liveReadCache = new Map<string, Promise<LiveReadResult>>()
 
-async function readLiveData(account: Address, options: { forceRefresh?: boolean } = {}): Promise<LiveReadResult> {
+async function readLiveData(
+  account: Address,
+  options: { forceRefresh?: boolean } = {},
+  customRpcUrl?: string,
+): Promise<LiveReadResult> {
+  if (customRpcUrl) return readLiveDataFromCustomRpc(account, customRpcUrl)
   const cacheKey = `${account.toLowerCase()}:account-live:${options.forceRefresh ? "refresh" : "cached"}`
   const cached = liveReadCache.get(cacheKey)
   if (cached) return cached
@@ -1886,6 +2170,34 @@ async function readLiveData(account: Address, options: { forceRefresh?: boolean 
   } finally {
     liveReadCache.delete(cacheKey)
   }
+}
+
+async function readLiveDataFromCustomRpc(account: Address, rpcUrl: string): Promise<LiveReadResult> {
+  const client = createSafenetPublicClient({ rpcUrl })
+  const [snapshot, health, validatorMetadata, rewardProofResult] = await Promise.all([
+    readAccountSnapshot(client, account),
+    readHealth(client),
+    fetchValidators(undefined, { fallback: true }),
+    fetchRewardProof(account)
+      .then((proof) => ({ proof, status: proof ? ("available" as const) : ("missing" as const) }))
+      .catch(() => ({ proof: null, status: "unavailable" as const })),
+  ])
+  const validatorsWithPositions = await readValidatorPositions(client, account, validatorMetadata)
+  const rewards = calculateClaimableRewards(rewardProofResult.proof, snapshot.cumulativeClaimed)
+  return {
+    health,
+    rewardProof: rewardProofResult.proof,
+    rewardProofStatus: rewardProofResult.status,
+    rewards,
+    snapshot,
+    validatorsWithPositions,
+  }
+}
+
+function calculateClaimableRewards(proof: RewardProof | null, cumulativeClaimed: bigint) {
+  if (!proof) return 0n
+  const cumulativeAmount = BigInt(proof.cumulativeAmount)
+  return cumulativeAmount > cumulativeClaimed ? cumulativeAmount - cumulativeClaimed : 0n
 }
 
 async function readLiveDataError(response: Response) {
@@ -2058,13 +2370,111 @@ function clearValidatorPosition(validator: ValidatorInfo): ValidatorInfo {
   }
 }
 
-function compareBigintDesc(a: bigint, b: bigint) {
-  if (a === b) return 0
-  return a > b ? -1 : 1
-}
-
 function readToastDurationMs(value: unknown) {
   if (typeof value !== "string" || value.trim() === "") return defaultToastDurationMs
   const parsed = Number(value)
   return Number.isFinite(parsed) && parsed >= 500 ? parsed : defaultToastDurationMs
+}
+
+function calculateSafenetBetaApyPercent(totalStaked: bigint, nowMs = Date.now()) {
+  if (nowMs < safenetBetaRewardStartMs || nowMs >= safenetBetaRewardEndMs || totalStaked <= 0n) return null
+  const rewardDurationMs = safenetBetaRewardEndMs - safenetBetaRewardStartMs
+  if (rewardDurationMs <= 0) return null
+  const apyBps = (safenetBetaRewardTotal * 10_000n * BigInt(msPerYear)) / (totalStaked * BigInt(rewardDurationMs))
+  return Number(apyBps) / 100
+}
+
+function calculateEstimatedAnnualRewards(totalStaked: bigint, apyPercent: number | null) {
+  if (apyPercent === null) return null
+  return (totalStaked * BigInt(Math.round(apyPercent * 100))) / 10_000n
+}
+
+function formatPercentOrDash(value: number | null) {
+  return value === null ? "-" : `${value.toFixed(2)}%`
+}
+
+function readStoredUserLlmConfig(): UserLlmConfig | null {
+  return readStorageJson(appStorageKeys.userLlmConfig, (value) => {
+    const record = typeof value === "object" && value !== null ? (value as Partial<UserLlmConfig>) : null
+    if (!record) return null
+    const apiBase = typeof record.apiBase === "string" ? record.apiBase.trim() : ""
+    const apiKey = typeof record.apiKey === "string" ? record.apiKey : ""
+    const model = typeof record.model === "string" ? record.model.trim() : ""
+    const maxTokens = readUserLlmMaxTokens(String(record.maxTokens ?? defaultUserLlmMaxTokens))
+    if (!apiBase || !apiKey || !model) return null
+    try {
+      if (!isAllowedUserLlmApiBase(new URL(apiBase))) return null
+    } catch {
+      return null
+    }
+    return { apiBase, apiKey, maxTokens, model }
+  })
+}
+
+function createUserLlmDraft(config: UserLlmConfig | null): UserLlmDraft {
+  return {
+    apiBase: config?.apiBase ?? "",
+    apiKey: "",
+    maxTokens: String(config?.maxTokens ?? defaultUserLlmMaxTokens),
+    model: config?.model ?? "",
+  }
+}
+
+function readUserLlmMaxTokens(value: string) {
+  const parsed = Number(value)
+  if (!Number.isSafeInteger(parsed)) return defaultUserLlmMaxTokens
+  return Math.min(4_000, Math.max(64, parsed))
+}
+
+async function verifyCustomRpcUrl(candidate: string, t: MessageBundle) {
+  let parsed: URL
+  try {
+    parsed = new URL(candidate)
+  } catch {
+    throw new Error(t.customRpcInvalidUrl)
+  }
+  if (!isAllowedCustomRpcUrl(parsed)) throw new Error(t.customRpcInvalidUrl)
+  const client = createSafenetPublicClient({ rpcUrl: candidate })
+  const nextChainId = await client.getChainId()
+  if (nextChainId !== CHAIN_ID) throw new Error(t.customRpcWrongChain)
+  await client.getBlockNumber()
+}
+
+function isAllowedCustomRpcUrl(url: URL) {
+  if (url.protocol === "https:") return true
+  if (url.protocol !== "http:") return false
+  return isLoopbackHostname(url.hostname)
+}
+
+async function verifyUserLlmConfig(config: UserLlmConfig, t: MessageBundle) {
+  try {
+    const response = await fetch(`${config.apiBase.replace(/\/+$/, "")}/chat/completions`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${config.apiKey}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: config.model,
+        stream: false,
+        max_tokens: 8,
+        messages: [{ role: "user", content: "ping" }],
+      }),
+    })
+    if (!response.ok) throw new Error(`${t.userLlmVerifyFailed} (${response.status})`)
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith(t.userLlmVerifyFailed)) throw error
+    throw new Error(t.userLlmVerifyFailed)
+  }
+}
+
+function isAllowedUserLlmApiBase(url: URL) {
+  if (url.protocol === "https:") return true
+  if (url.protocol !== "http:") return false
+  return isLoopbackHostname(url.hostname)
+}
+
+function isLoopbackHostname(hostname: string) {
+  const normalized = hostname.toLowerCase()
+  return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1" || normalized === "[::1]"
 }

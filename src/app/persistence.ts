@@ -5,6 +5,8 @@ export const appStorageKeys = {
   agentLauncherPosition: "safecafe:agent-launcher-position",
   agentSessions: "safecafe:agent:sessions",
   accountLiveCache: "safecafe:account-live-cache:v1",
+  customRpcUrl: "safecafe:custom-rpc-url",
+  userLlmConfig: "safecafe:user-llm-config",
   dashboardAction: "safecafe:dashboard-action",
   locale: "safecafe:locale",
   rpcSession: "safecafe:rpc-session",

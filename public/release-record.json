@@ -1,0 +1,88 @@
+{
+  "name": "safecafe",
+  "version": "0.1.0",
+  "createdAt": "2026-07-04T08:15:02.479Z",
+  "commit": "4c87b8db92c32178df0cc61d3d747264ad99e86d",
+  "dirty": true,
+  "build": {
+    "command": "pnpm build:web",
+    "packageManager": "pnpm@11.0.0-rc.0"
+  },
+  "contracts": {
+    "safeToken": "0x5aFE3855358E112B5647B952709E6165e1c1eEEe",
+    "staking": "0x115E78f160e1E3eF163B05C84562Fa16fA338509",
+    "merkleDrop": "0xe5139Fc0FB8eae81e30d8a85C22E88c6757120f2"
+  },
+  "files": [
+    {
+      "path": "_headers",
+      "size": 353,
+      "sha256": "21a652b9bc2ea0246d827f8f00c2b7ab672c7b6523d27227aedd960ccec3cc8e"
+    },
+    {
+      "path": "_redirects",
+      "size": 19,
+      "sha256": "6036983e5fc00f0169c9e939b1816ed771eee00e27f2fcc517b819041460b9ef"
+    },
+    {
+      "path": "assets/icons-CjJA0poe.js",
+      "size": 13487,
+      "sha256": "950be81bd5b4580ed6842fe4a121d81137a49768b3556838fe29221bee66bc7e"
+    },
+    {
+      "path": "assets/index-D8apuEBU.css",
+      "size": 23752,
+      "sha256": "d19c85363147e26f24a91108a5f14ee3df94e407357ace20d6c9db5c48fd4d9c"
+    },
+    {
+      "path": "assets/index-jeT4Ib7W.js",
+      "size": 245441,
+      "sha256": "9fb0fc44964febb7e3336b97190517a327086c47d74b8a7c995cdc178258a347"
+    },
+    {
+      "path": "assets/react-D9LMJYMt.js",
+      "size": 3654,
+      "sha256": "eb0d3341d1852524aa833f66f1d21ad884bba27f6b2b1958599ad8ac43dc765e"
+    },
+    {
+      "path": "assets/viem-BEPs35OZ.js",
+      "size": 266648,
+      "sha256": "b92977a8451f6e975c720c125dfbd2d68fa57d4d7d1e933319cb9933a5efd4a7"
+    },
+    {
+      "path": "favicon.svg",
+      "size": 1449,
+      "sha256": "bbcae5d1d32705b0cffa7befee31c02cf2871b61f88af68f5ee99c71841ae427"
+    },
+    {
+      "path": "index.html",
+      "size": 2620,
+      "sha256": "62c8037bc0347a1ed5af44c44ab6242df86476c8450be656c3e094daaead6816"
+    },
+    {
+      "path": "manifest.json",
+      "size": 517,
+      "sha256": "9be7062bc7b54282662b840f8a9a5c2a7ee09c63d4ceda51b7eccb61cd661b16"
+    },
+    {
+      "path": "release-manifest.json",
+      "size": 2858,
+      "sha256": "d34473c860bea4c743608afc22e750cdebd2f4757cf0e40f32d66fa33bb5e9a4"
+    },
+    {
+      "path": "safecafe.png",
+      "size": 1161852,
+      "sha256": "411465c80608c3e78cf1fba5fde6a896f01243cefd8e024444413e5cc6db986c"
+    }
+  ],
+  "ipfs": {
+    "cid": "bafybeid5igerevatkm46z45thxssenbkeyfbikkip7v5n7mpubvlsst7ji",
+    "uri": "ipfs://bafybeid5igerevatkm46z45thxssenbkeyfbikkip7v5n7mpubvlsst7ji",
+    "gateways": {
+      "filebase": "https://ipfs.filebase.io/ipfs/bafybeid5igerevatkm46z45thxssenbkeyfbikkip7v5n7mpubvlsst7ji/",
+      "ipfsIo": "https://ipfs.io/ipfs/bafybeid5igerevatkm46z45thxssenbkeyfbikkip7v5n7mpubvlsst7ji/",
+      "dweb": "https://bafybeid5igerevatkm46z45thxssenbkeyfbikkip7v5n7mpubvlsst7ji.ipfs.dweb.link/",
+      "ethLimo": "https://safe-staking.eth.limo/"
+    }
+  }
+}

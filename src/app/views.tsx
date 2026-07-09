@@ -1,10 +1,12 @@
 import {
   ArrowDownToLine,
+  Bot,
   CheckCircle2,
   Clock3,
   Database,
   ExternalLink,
   Gift,
+  Github,
   Info,
   ShieldCheck,
   TerminalSquare,
@@ -22,20 +24,30 @@ import {
   formatSafe,
   formatSafeInput,
   formatUsdFromSafe,
+  type TxPlan,
   type ValidatorInfo,
 } from "../protocol"
-import { formatDelayLabel, merkleLabel } from "./formatters"
+import { type ChainTxStepStatus, chainActionBusyLabel, chainTxStepStatuses } from "./actionStatus"
+import { formatDelayLabel, merkleLabel, translateTxLabel } from "./formatters"
 import type { MessageBundle } from "./i18n"
 import type { AccountSummary, Action, DataStatus, Modal, NavItem } from "./types"
-import { ActionButton, CustomSelect, FullPanel, InfoCard, Progress, StatusBadge, Tooltip } from "./ui"
+import { ActionButton, ButtonBusyLabel, CustomSelect, FullPanel, InfoCard, Progress, StatusBadge, Tooltip } from "./ui"
 
 type ValidatorSort = "stake" | "participation" | "commission" | "name" | "yourStake"
 type SubmittingAction = Action | "claim-rewards-and-stake" | null
+type CustomRpcStatus = "checking" | "idle" | "invalid" | "valid"
+type UserLlmStatus = "checking" | "idle" | "invalid" | "valid"
+type UserLlmDraft = {
+  apiBase: string
+  apiKey: string
+  maxTokens: string
+  model: string
+}
 type ExecuteActionOptions = { amount?: string; validator?: Address }
 type DecisionMetrics = {
   activeValidatorCount: number
-  apyPercent: number
-  estimatedAnnualRewards: bigint
+  apyPercent: number | null
+  estimatedAnnualRewards: bigint | null
   protocolTvlUsd: string
   validatorPoolTotal: bigint
   withdrawDelay: bigint
@@ -55,6 +67,7 @@ const validatorSkeletonKeys = [
   "validator-skeleton-3",
   "validator-skeleton-4",
 ]
+const sourceRepositoryUrl = "https://github.com/cosin2077/safecafe"
 
 export function DashboardView(props: {
   t: MessageBundle
@@ -82,6 +95,7 @@ export function DashboardView(props: {
   showOnlyActive: boolean
   summary: AccountSummary
   safePriceUsd: number | null
+  txPlan: TxPlan | null
   txProgress: string
   validator: Address
   visibleValidators: ValidatorInfo[]
@@ -97,6 +111,8 @@ export function DashboardView(props: {
   const stakeOrUnstakeLoading = props.submittingAction === props.action
   const claimRewardsLoading = props.submittingAction === "claim-rewards"
   const claimAndStakeLoading = props.submittingAction === "claim-rewards-and-stake"
+  const busyActionLabel = chainActionBusyLabel(t, props.txProgress)
+  const formControlsDisabled = props.isSubmitting
   const validatorOptions = props.validators.map((item) => ({
     value: item.address,
     label: item.label,
@@ -115,6 +131,7 @@ export function DashboardView(props: {
               icon={<Upload />}
               title={t.txStakeTitle}
               subtitle={t.stakeSub}
+              disabled={formControlsDisabled}
               onClick={() => props.selectAction("stake")}
             />
             <ActionButton
@@ -122,6 +139,7 @@ export function DashboardView(props: {
               icon={<ArrowDownToLine />}
               title={t.txUnstakeTitle}
               subtitle={t.unstakeSub}
+              disabled={formControlsDisabled}
               onClick={() => props.selectAction("unstake")}
             />
             <ActionButton
@@ -129,7 +147,7 @@ export function DashboardView(props: {
               icon={<Gift />}
               title={t.claimRewards}
               subtitle={t.claimRewardsSub}
-              disabled={props.isSubmitting}
+              disabled={formControlsDisabled}
               onClick={() => props.selectAction("claim-rewards")}
             />
           </div>
@@ -142,12 +160,13 @@ export function DashboardView(props: {
                     inputMode="decimal"
                     value={props.amount}
                     placeholder="0.00"
+                    disabled={formControlsDisabled}
                     onChange={(event) => props.setAmount(event.target.value)}
                   />
                   <span>SAFE</span>
                   <button
                     type="button"
-                    disabled={!props.accountReady}
+                    disabled={!props.accountReady || formControlsDisabled}
                     onClick={() =>
                       props.setAmount(
                         formatSafeInput(
@@ -164,7 +183,7 @@ export function DashboardView(props: {
               <div className="field-group">
                 <span className="field-label">{t.validator}</span>
                 <CustomSelect
-                  disabled={!hasValidators}
+                  disabled={!hasValidators || formControlsDisabled}
                   label={t.validator}
                   value={props.validator}
                   onChange={(value) => props.setValidator(value as Address)}
@@ -174,28 +193,25 @@ export function DashboardView(props: {
               <button
                 type="button"
                 className="primary-button"
-                disabled={props.isSubmitting}
+                disabled={formControlsDisabled}
                 onClick={() =>
                   void (props.accountReady
                     ? props.executeAction(props.action, { amount: props.amount, validator: props.validator })
                     : props.onConnect())
                 }
               >
-                {stakeOrUnstakeLoading
-                  ? t.preparingAction
-                  : !props.accountReady
-                    ? accountActionLabel
-                    : props.action === "stake"
-                      ? t.stakeAction
-                      : t.unstakeAction}
+                {stakeOrUnstakeLoading ? (
+                  <ButtonBusyLabel>{busyActionLabel}</ButtonBusyLabel>
+                ) : !props.accountReady ? (
+                  accountActionLabel
+                ) : props.action === "stake" ? (
+                  t.stakeAction
+                ) : (
+                  t.unstakeAction
+                )}
               </button>
               <TransactionPreview t={t} preview={props.actionPreview} />
-              {props.txProgress && (
-                <p className="action-progress-note">
-                  <span className="spinner" />
-                  {props.txProgress}
-                </p>
-              )}
+              <ChainProgressPanel t={t} txPlan={props.txPlan} txProgress={props.txProgress} />
             </div>
           )}
           {props.action === "claim-rewards" && (
@@ -203,7 +219,7 @@ export function DashboardView(props: {
               <div className="field-group restake-target-field">
                 <span className="field-label">{t.restakeTargetValidator}</span>
                 <CustomSelect
-                  disabled={!hasValidators || props.isSubmitting}
+                  disabled={!hasValidators || formControlsDisabled}
                   label={t.restakeTargetValidator}
                   value={props.validator}
                   onChange={(value) => props.setValidator(value as Address)}
@@ -214,29 +230,37 @@ export function DashboardView(props: {
                 <button
                   type="button"
                   className="primary-button"
-                  disabled={props.isSubmitting}
+                  disabled={formControlsDisabled}
                   onClick={() =>
                     void (props.accountReady
                       ? props.executeAction("claim-rewards", { amount: props.amount, validator: props.validator })
                       : props.onConnect())
                   }
                 >
-                  {claimRewardsLoading ? t.preparingAction : !props.accountReady ? accountActionLabel : t.claimToWallet}
+                  {claimRewardsLoading ? (
+                    <ButtonBusyLabel>{busyActionLabel}</ButtonBusyLabel>
+                  ) : !props.accountReady ? (
+                    accountActionLabel
+                  ) : (
+                    t.claimToWallet
+                  )}
                 </button>
                 <button
                   type="button"
                   className="feature-button"
-                  disabled={props.isSubmitting}
+                  disabled={formControlsDisabled}
                   onClick={() =>
                     void (props.accountReady ? props.executeClaimRewardsAndStake(props.validator) : props.onConnect())
                   }
                 >
                   <Upload size={15} aria-hidden="true" />
-                  {claimAndStakeLoading
-                    ? t.preparingAction
-                    : !props.accountReady
-                      ? accountActionLabel
-                      : t.claimAndRestake}
+                  {claimAndStakeLoading ? (
+                    <ButtonBusyLabel>{busyActionLabel}</ButtonBusyLabel>
+                  ) : !props.accountReady ? (
+                    accountActionLabel
+                  ) : (
+                    t.claimAndRestake
+                  )}
                 </button>
               </div>
               <TransactionPreview t={t} title={t.claimToWallet} preview={props.actionPreview} />
@@ -247,12 +271,7 @@ export function DashboardView(props: {
                 <li>{t.allowance}</li>
                 <li>{t.stakeAction}</li>
               </ol>
-              {props.txProgress && (
-                <p className="action-progress-note">
-                  <span className="spinner" />
-                  {props.txProgress}
-                </p>
-              )}
+              <ChainProgressPanel t={t} txPlan={props.txPlan} txProgress={props.txProgress} />
             </div>
           )}
         </section>
@@ -287,14 +306,14 @@ function DecisionMetricsStrip({
 }) {
   return (
     <section className="decision-strip" aria-label={t.publicProtocolData}>
-      <div className="decision-primary">
+      <div className="decision-primary decision-rewards">
         <span className="decision-icon">
           <Database size={28} />
         </span>
         <span>{t.estimatedAnnualRewards}</span>
-        <strong>{accountReady ? `${formatSafe(metrics.estimatedAnnualRewards)} SAFE` : "-- SAFE"}</strong>
+        <strong>{accountReady ? formatOptionalSafeAmount(metrics.estimatedAnnualRewards) : "-- SAFE"}</strong>
       </div>
-      <div>
+      <div className="decision-tvl">
         <span className="decision-icon">
           <TrendingUp size={28} />
         </span>
@@ -302,14 +321,14 @@ function DecisionMetricsStrip({
         <strong>{metrics.protocolTvlUsd}</strong>
         <small>{formatSafe(metrics.validatorPoolTotal, 0)} SAFE</small>
       </div>
-      <div>
+      <div className="decision-delay">
         <span className="decision-icon">
           <Clock3 size={28} />
         </span>
         <span>{t.unstakeDelay}</span>
         <strong>{formatDelayLabel(metrics.withdrawDelay, t)}</strong>
       </div>
-      <div>
+      <div className="decision-count">
         <span className="decision-icon">
           <Users size={28} />
         </span>
@@ -318,6 +337,10 @@ function DecisionMetricsStrip({
       </div>
     </section>
   )
+}
+
+function formatOptionalSafeAmount(value: bigint | null) {
+  return value === null ? "- SAFE" : `${formatSafe(value)} SAFE`
 }
 
 function TransactionPreview({ preview, t, title }: { preview: ActionPreview; t: MessageBundle; title?: string }) {
@@ -355,6 +378,70 @@ function PreviewItem({ label, value }: { label: string; value: string }) {
       <strong>{value}</strong>
     </div>
   )
+}
+
+function ChainProgressPanel({
+  t,
+  txPlan,
+  txProgress,
+}: {
+  t: MessageBundle
+  txPlan: TxPlan | null
+  txProgress: string
+}) {
+  if (!txProgress) return null
+  const stageLabel = chainActionBusyLabel(t, txProgress)
+  const txLabels = txPlan?.txs.map((tx) => translateTxLabel(tx.label, t)) ?? []
+  const labels = txLabels.length > 0 ? txLabels : [stageLabel]
+  const labelCounts = new Map<string, number>()
+  const steps = labels.map((label) => {
+    const count = (labelCounts.get(label) ?? 0) + 1
+    labelCounts.set(label, count)
+    return { key: `${label}-${count}`, label }
+  })
+  const statuses = chainTxStepStatuses(labels, txProgress, true)
+  const progressPercent = progressPercentFromStatuses(statuses)
+  return (
+    <section className="chain-progress-panel" aria-label={t.transactionProgress} aria-live="polite">
+      <div className="chain-progress-heading">
+        <span>
+          <strong>{t.transactionProgress}</strong>
+          <small>{stageLabel}</small>
+        </span>
+        <em>{`${Math.round(progressPercent)}%`}</em>
+      </div>
+      <div className="chain-progress-meter" aria-hidden="true">
+        <span style={{ width: `${progressPercent}%` }} />
+      </div>
+      <div className="chain-progress-steps">
+        {steps.map((step, index) => (
+          <ChainProgressStep key={step.key} label={step.label} status={statuses[index] ?? "pending"} />
+        ))}
+      </div>
+      <p>{txProgress}</p>
+    </section>
+  )
+}
+
+function ChainProgressStep({ label, status }: { label: string; status: ChainTxStepStatus }) {
+  return (
+    <span className={`chain-progress-step ${status}`}>
+      <span className="chain-progress-step-icon" aria-hidden="true">
+        {status === "done" ? (
+          <CheckCircle2 size={13} />
+        ) : status === "current" ? (
+          <span className="chain-progress-spinner" />
+        ) : null}
+      </span>
+      <span>{label}</span>
+    </span>
+  )
+}
+
+function progressPercentFromStatuses(statuses: ChainTxStepStatus[]) {
+  if (statuses.length === 0) return 0
+  const score = statuses.reduce((total, status) => total + (status === "done" ? 1 : status === "current" ? 0.5 : 0), 0)
+  return Math.min(96, Math.max(10, (score / statuses.length) * 100))
 }
 
 export function ValidatorTable(props: {
@@ -429,7 +516,7 @@ export function ValidatorTable(props: {
                 disabled={item.status !== "active"}
                 onClick={() => props.onStake(item.address)}
               >
-                {t.stakeAction}
+                {t.prepareStakeAction}
               </button>
               <Tooltip
                 className="validator-action-tooltip"
@@ -441,7 +528,7 @@ export function ValidatorTable(props: {
                   disabled={!props.accountReady || item.userStake <= 0n}
                   onClick={() => props.onUnstake(item.address)}
                 >
-                  {t.unstakeAction}
+                  {t.prepareUnstakeAction}
                 </button>
               </Tooltip>
               <Tooltip label={t.more}>
@@ -684,15 +771,16 @@ export function WithdrawalsView(props: {
   liveSnapshot: AccountSnapshot | null
   submittingAction: SubmittingAction
   t: MessageBundle
-  selectAction: (action: Action) => void
   summary: AccountSummary
+  txPlan: TxPlan | null
   txProgress: string
 }) {
   const { t } = props
   const isClaimingWithdrawal = props.submittingAction === "claim-withdrawal"
+  const busyActionLabel = chainActionBusyLabel(t, props.txProgress)
   const pendingRows = props.liveSnapshot?.pendingWithdrawals ?? []
   return (
-    <FullPanel title={t.withdrawals}>
+    <FullPanel className="withdrawals-panel">
       <div className="split-cards">
         <InfoCard
           icon={<Clock3 />}
@@ -734,24 +822,22 @@ export function WithdrawalsView(props: {
           )}
         </div>
       </section>
-      <div className="workflow-panel">
-        <button
-          type="button"
-          className="primary-button"
-          disabled={props.isSubmitting}
-          onClick={() => {
-            props.selectAction("claim-withdrawal")
-            void props.executeAction("claim-withdrawal")
-          }}
-        >
-          {isClaimingWithdrawal ? t.preparingAction : t.claimWithdrawals}
-        </button>
-        {props.txProgress && (
-          <p className="action-progress-note">
-            <span className="spinner" />
-            {props.txProgress}
-          </p>
-        )}
+      <div className={`withdrawal-action-row ${props.txProgress ? "has-progress" : ""}`}>
+        <div className="withdrawal-progress-slot">
+          <ChainProgressPanel t={t} txPlan={props.txPlan} txProgress={props.txProgress} />
+        </div>
+        <div className="withdrawal-action-slot">
+          <button
+            type="button"
+            className="primary-button"
+            disabled={props.isSubmitting}
+            onClick={() => {
+              void props.executeAction("claim-withdrawal")
+            }}
+          >
+            {isClaimingWithdrawal ? <ButtonBusyLabel>{busyActionLabel}</ButtonBusyLabel> : t.claimWithdrawals}
+          </button>
+        </div>
       </div>
     </FullPanel>
   )
@@ -765,17 +851,28 @@ export function RewardsView(props: {
   isSubmitting: boolean
   restakePreview: ActionPreview
   selectedValidator: ValidatorInfo
+  setValidator: (address: Address) => void
   submittingAction: SubmittingAction
   t: MessageBundle
-  selectAction: (action: Action) => void
   summary: AccountSummary
+  txPlan: TxPlan | null
   txProgress: string
+  validators: ValidatorInfo[]
 }) {
   const { t } = props
+  const hasValidators = props.validators.length > 0
   const isClaimingRewards = props.submittingAction === "claim-rewards"
   const isClaimingAndRestaking = props.submittingAction === "claim-rewards-and-stake"
+  const showClaimRewardsProgress = isClaimingRewards && Boolean(props.txProgress)
+  const showClaimAndRestakeProgress = isClaimingAndRestaking && Boolean(props.txProgress)
+  const busyActionLabel = chainActionBusyLabel(t, props.txProgress)
+  const validatorOptions = props.validators.map((item) => ({
+    value: item.address,
+    label: item.label,
+    detail: `${compactAddress(item.address, 8, 6)} · ${t.yourStake} ${formatSafe(item.userStake)} SAFE`,
+  }))
   return (
-    <FullPanel title={t.rewards}>
+    <FullPanel className="rewards-panel">
       <div className="split-cards">
         <InfoCard
           icon={<Gift />}
@@ -789,52 +886,74 @@ export function RewardsView(props: {
           value={merkleLabel(t, props.dataStatus.merkleRootMatched)}
         />
       </div>
-      <div className="workflow-panel">
-        <TransactionPreview t={t} preview={props.actionPreview} />
-        <div className="restake-preview-note reward-restake-target">
-          <strong>{t.restakeTargetValidator}</strong>
-          <span>
-            {props.selectedValidator.label} · {compactAddress(props.selectedValidator.address, 8, 6)}
-          </span>
-        </div>
-        <div className="claim-action-row">
+      <div className="reward-action-grid">
+        <section className={`reward-action-card ${showClaimRewardsProgress ? "active" : ""}`}>
+          <div className="reward-action-heading">
+            <span className="reward-action-icon">
+              <Gift size={17} />
+            </span>
+            <div>
+              <h3>{t.claimToWallet}</h3>
+              <p>{t.walletConfirmationHint}</p>
+            </div>
+          </div>
+          <div className="field-group compact">
+            <span className="field-label">{t.wallet}</span>
+            <div className="reward-action-target">
+              <strong>{t.claimToWallet}</strong>
+              <small>{t.walletConfirmationHint}</small>
+            </div>
+          </div>
+          <TransactionPreview t={t} preview={props.actionPreview} />
           <button
             type="button"
             className="primary-button"
             disabled={props.isSubmitting}
             onClick={() => {
-              props.selectAction("claim-rewards")
               void props.executeAction("claim-rewards", { validator: props.selectedValidator.address })
             }}
           >
-            {isClaimingRewards ? t.preparingAction : t.claimToWallet}
+            {isClaimingRewards ? <ButtonBusyLabel>{busyActionLabel}</ButtonBusyLabel> : t.claimToWallet}
           </button>
+          {showClaimRewardsProgress && <ChainProgressPanel t={t} txPlan={props.txPlan} txProgress={props.txProgress} />}
+        </section>
+
+        <section className={`reward-action-card restake ${showClaimAndRestakeProgress ? "active" : ""}`}>
+          <div className="reward-action-heading">
+            <span className="reward-action-icon">
+              <Upload size={17} />
+            </span>
+            <div>
+              <h3>{t.claimAndRestake}</h3>
+              <p>{t.restakePreview}</p>
+            </div>
+          </div>
+          <div className="field-group compact">
+            <span className="field-label">{t.restakeTargetValidator}</span>
+            <CustomSelect
+              disabled={!hasValidators || props.isSubmitting}
+              label={t.restakeTargetValidator}
+              value={props.selectedValidator.address}
+              onChange={(value) => props.setValidator(value as Address)}
+              options={validatorOptions}
+            />
+          </div>
+          <TransactionPreview t={t} preview={props.restakePreview} />
           <button
             type="button"
             className="feature-button"
             disabled={props.isSubmitting}
             onClick={() => {
-              props.selectAction("claim-rewards")
               void props.executeClaimRewardsAndStake(props.selectedValidator.address)
             }}
           >
             <span aria-hidden="true">✨</span>
-            {isClaimingAndRestaking ? t.preparingAction : t.claimAndRestake}
+            {isClaimingAndRestaking ? <ButtonBusyLabel>{busyActionLabel}</ButtonBusyLabel> : t.claimAndRestake}
           </button>
-        </div>
-        <p className="restake-preview-note">{t.restakePreview}</p>
-        <TransactionPreview t={t} preview={props.restakePreview} />
-        <ol className="restake-flow-steps" aria-label={t.claimAndRestake}>
-          <li>{t.claimToWallet}</li>
-          <li>{t.allowance}</li>
-          <li>{t.stakeAction}</li>
-        </ol>
-        {props.txProgress && (
-          <p className="action-progress-note">
-            <span className="spinner" />
-            {props.txProgress}
-          </p>
-        )}
+          {showClaimAndRestakeProgress && (
+            <ChainProgressPanel t={t} txPlan={props.txPlan} txProgress={props.txProgress} />
+          )}
+        </section>
       </div>
     </FullPanel>
   )
@@ -842,20 +961,66 @@ export function RewardsView(props: {
 
 export function DocsView({
   copyText,
+  customRpcMessage,
+  customRpcSavedUrl,
+  customRpcStatus,
+  customRpcUrl,
+  onClearCustomRpc,
+  onClearUserLlm,
+  onCustomRpcChange,
+  onSaveCustomRpc,
+  onSaveUserLlm,
+  onUserLlmChange,
   openExplorer,
   t,
+  userLlmDraft,
+  userLlmMessage,
+  userLlmSaved,
+  userLlmStatus,
 }: {
   copyText: (value: string) => Promise<void>
+  customRpcMessage: string
+  customRpcSavedUrl: string
+  customRpcStatus: CustomRpcStatus
+  customRpcUrl: string
+  onClearCustomRpc: () => void
+  onClearUserLlm: () => void
+  onCustomRpcChange: (value: string) => void
+  onSaveCustomRpc: () => void
+  onSaveUserLlm: () => Promise<void> | void
+  onUserLlmChange: (field: keyof UserLlmDraft, value: string) => void
   openExplorer: (address: Address) => void
   t: MessageBundle
+  userLlmDraft: UserLlmDraft
+  userLlmMessage: string
+  userLlmSaved: boolean
+  userLlmStatus: UserLlmStatus
 }) {
   const contracts = [
     { label: t.safeTokenContract, address: CONTRACTS.safeToken },
     { label: t.stakingContractShort, address: CONTRACTS.staking },
     { label: t.rewardsContractShort, address: CONTRACTS.merkleDrop },
   ]
+  const customRpcStatusText =
+    customRpcMessage ||
+    (customRpcStatus === "valid"
+      ? t.customRpcActive
+      : customRpcStatus === "checking"
+        ? t.customRpcChecking
+        : customRpcStatus === "invalid"
+          ? t.customRpcFailed
+          : "")
+  const userLlmStatusText =
+    userLlmMessage ||
+    (userLlmStatus === "valid"
+      ? t.userLlmActive
+      : userLlmStatus === "checking"
+        ? t.userLlmChecking
+        : userLlmStatus === "invalid"
+          ? t.userLlmFailed
+          : "")
   return (
-    <FullPanel title={t.docsTitle}>
+    <FullPanel>
       <div className="docs-grid">
         <InfoCard icon={<ShieldCheck />} title={t.docsNonCustodial} value={t.docsNonCustodialValue} />
         <InfoCard icon={<TerminalSquare />} title={t.docsCliParity} value={t.docsCliParityValue} />
@@ -910,7 +1075,157 @@ export function DocsView({
               <strong>{t.auditStatusValue}</strong>
             </span>
           </div>
+          <div className="trust-row">
+            <span>
+              <small>{t.sourceCode}</small>
+              <strong>{t.githubRepository}</strong>
+            </span>
+            <div>
+              <a className="code-button" href={sourceRepositoryUrl} target="_blank" rel="noreferrer">
+                <Github size={14} />
+                GitHub
+              </a>
+            </div>
+          </div>
         </div>
+      </section>
+      <section className="rpc-settings-panel" aria-labelledby="custom-rpc-title">
+        <div className="rpc-settings-heading">
+          <div>
+            <h3 id="custom-rpc-title">{t.customRpcTitle}</h3>
+            <p>{t.customRpcDescription}</p>
+          </div>
+          {customRpcSavedUrl ? (
+            <span className="rpc-settings-current" title={customRpcSavedUrl}>
+              {t.customRpcCurrent}
+            </span>
+          ) : null}
+        </div>
+        <form
+          className="rpc-settings-form"
+          onSubmit={(event) => {
+            event.preventDefault()
+            onSaveCustomRpc()
+          }}
+        >
+          <label>
+            <span>{t.customRpcPlaceholder}</span>
+            <input
+              type="text"
+              inputMode="url"
+              value={customRpcUrl}
+              placeholder="https://..."
+              disabled={customRpcStatus === "checking"}
+              onChange={(event) => onCustomRpcChange(event.target.value)}
+            />
+          </label>
+          <div className="rpc-settings-actions">
+            <button type="submit" className="primary-button" disabled={customRpcStatus === "checking"}>
+              {customRpcStatus === "checking" ? t.customRpcChecking : t.customRpcSave}
+            </button>
+            <button
+              type="button"
+              className="code-button"
+              disabled={customRpcStatus === "checking"}
+              onClick={onClearCustomRpc}
+            >
+              {t.customRpcClear}
+            </button>
+          </div>
+        </form>
+        <div className={`rpc-settings-status ${customRpcStatus}`} aria-live="polite">
+          {customRpcStatusText ? <span>{customRpcStatusText}</span> : <span>{t.customRpcNotConfigured}</span>}
+          {customRpcSavedUrl ? <strong title={customRpcSavedUrl}>{customRpcSavedUrl}</strong> : null}
+        </div>
+      </section>
+      <section className="llm-settings-panel" aria-labelledby="user-llm-title">
+        <div className="rpc-settings-heading">
+          <div>
+            <h3 id="user-llm-title">{t.userLlmTitle}</h3>
+            <p>{t.userLlmDescription}</p>
+          </div>
+          {userLlmSaved ? (
+            <span className="rpc-settings-current" title={userLlmDraft.apiBase}>
+              {t.userLlmCurrent}
+            </span>
+          ) : null}
+        </div>
+        <form
+          className="rpc-settings-form llm-settings-form"
+          onSubmit={(event) => {
+            event.preventDefault()
+            onSaveUserLlm()
+          }}
+        >
+          <div className="llm-settings-fields">
+            <label className="llm-field-wide">
+              <span>{t.userLlmApiBase}</span>
+              <input
+                type="text"
+                inputMode="url"
+                value={userLlmDraft.apiBase}
+                placeholder="https://api.openai.com/v1"
+                disabled={userLlmStatus === "checking"}
+                onChange={(event) => onUserLlmChange("apiBase", event.target.value)}
+              />
+            </label>
+            <label className="llm-field-compact">
+              <span>{t.userLlmMaxTokens}</span>
+              <input
+                type="number"
+                inputMode="numeric"
+                min={64}
+                max={4000}
+                step={1}
+                value={userLlmDraft.maxTokens}
+                disabled={userLlmStatus === "checking"}
+                onChange={(event) => onUserLlmChange("maxTokens", event.target.value)}
+              />
+            </label>
+            <label>
+              <span>{t.userLlmModel}</span>
+              <input
+                type="text"
+                value={userLlmDraft.model}
+                placeholder="gpt-4.1-mini"
+                disabled={userLlmStatus === "checking"}
+                onChange={(event) => onUserLlmChange("model", event.target.value)}
+              />
+            </label>
+            <label className="llm-field-secret">
+              <span>{t.userLlmApiKey}</span>
+              <input
+                type="password"
+                value={userLlmDraft.apiKey}
+                placeholder={userLlmSaved ? t.userLlmKeySaved : "sk-..."}
+                autoComplete="off"
+                disabled={userLlmStatus === "checking"}
+                onChange={(event) => onUserLlmChange("apiKey", event.target.value)}
+              />
+              <small>{t.userLlmSecurityNote}</small>
+            </label>
+          </div>
+          <div className="llm-settings-footer">
+            <div className={`rpc-settings-status llm-settings-status ${userLlmStatus}`} aria-live="polite">
+              {userLlmStatusText ? <span>{userLlmStatusText}</span> : <span>{t.userLlmNotConfigured}</span>}
+              {userLlmSaved ? <strong title={userLlmDraft.apiBase}>{userLlmDraft.model}</strong> : null}
+            </div>
+            <div className="rpc-settings-actions llm-settings-actions">
+              <button type="submit" className="primary-button" disabled={userLlmStatus === "checking"}>
+                <Bot size={15} />
+                {userLlmStatus === "checking" ? t.userLlmChecking : t.userLlmSave}
+              </button>
+              <button
+                type="button"
+                className="code-button"
+                disabled={userLlmStatus === "checking"}
+                onClick={onClearUserLlm}
+              >
+                {t.userLlmClear}
+              </button>
+            </div>
+          </div>
+        </form>
       </section>
     </FullPanel>
   )

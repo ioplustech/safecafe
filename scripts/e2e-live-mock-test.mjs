@@ -49,6 +49,7 @@ try {
   await runScenario("dashboard tab switching and validation timing", () => runDashboardTabPersistenceFlow(driver))
   await runScenario("empty unstake tab switching", () => runEmptyUnstakeTabSwitchingFlow(driver, chain))
   await runScenario("staking overview validator positions", () => runDashboardValidatorDetailsFlow(driver))
+  await runScenario("manual action unlocks protected RPC", () => runManualActionAuthFlow(driver))
   await runScenario("staking agent streaming guidance", () => runAgentFlow(page))
   await runScenario("staking agent restake action card", () => runAgentRestakeActionFlow(page, driver, chain))
   await runScenario("unstake max precision and withdrawal claim", () => runUnstakeMaxPrecisionFlow(driver, chain))
@@ -109,8 +110,9 @@ async function runDecisionSurfaceFlow(page, driver) {
   await page.getByText("Current APY").waitFor()
   await page.getByText("Protocol TVL").waitFor()
   await page.getByText("Unstake delay").waitFor()
-  await page.getByText("Trust & Verification").waitFor()
-  await page.getByText("Ethereum Mainnet · Chain ID 1").waitFor()
+  const trustStrip = page.locator(".summary-trust-strip")
+  await trustStrip.waitFor()
+  await trustStrip.getByText("Ethereum Mainnet · Chain ID 1").waitFor()
   await page.getByText("Transaction Preview").waitFor()
   await page.getByText("Estimated Gas").waitFor()
   await page.getByText("Wallet confirmation").waitFor()
@@ -149,7 +151,24 @@ async function runEmptyUnstakeTabSwitchingFlow(driver, chain) {
 }
 
 async function runDashboardValidatorDetailsFlow(driver) {
+  await driver.refreshLiveData()
   await driver.expectOverviewValidatorPosition({ validatorLabel: "Core Contributors", amount: "20.01" })
+}
+
+async function runManualActionAuthFlow(driver) {
+  await driver.clearRpcSession()
+  const signCountBefore = await driver.walletPersonalSignCount()
+  await driver.stake({ amount: "1" })
+  const signCountAfter = await driver.walletPersonalSignCount()
+  if (signCountAfter !== signCountBefore + 1) {
+    throw new Error(
+      `Expected first manual action to unlock protected RPC with one signature, got ${
+        signCountAfter - signCountBefore
+      } signatures`,
+    )
+  }
+  await driver.expectRecentRpcRequestsAuthorized(2)
+  await driver.expectLastTxSequence(["approve", "stake"])
 }
 
 async function runUnstakeMaxPrecisionFlow(driver, chain) {
@@ -158,7 +177,7 @@ async function runUnstakeMaxPrecisionFlow(driver, chain) {
   const safeBalanceBeforeClaim = chain.state.safeBalance
   await driver.selectValidatorTableAction({ action: "Unstake", validatorLabel: "Core Contributors" })
   await driver.expectCurrentActionSelectDetail("Core Contributors")
-  await driver.expectCurrentActionSelectDetail("Your Stake 20.01 SAFE")
+  await driver.expectCurrentActionSelectDetail(`Your Stake ${formatSafeAmountForSummary(coreStakeBeforeMax)}`)
   await driver.clickActionMax()
   await driver.expectNoVisibleText("Your stake on this validator is insufficient.")
   await driver.submitPrimaryAction()
@@ -173,13 +192,12 @@ async function runUnstakeMaxPrecisionFlow(driver, chain) {
 }
 
 async function runStakeFlow(driver) {
-  await driver.clearRpcSession()
   const signCountBefore = await driver.walletPersonalSignCount()
   await driver.stake({ amount: "10" })
   const signCountAfter = await driver.walletPersonalSignCount()
-  if (signCountAfter !== signCountBefore + 1) {
+  if (signCountAfter !== signCountBefore) {
     throw new Error(
-      `Expected regular stake to unlock protected RPC with one signature, got ${signCountAfter - signCountBefore} signatures`,
+      `Expected regular stake to reuse RPC auth session, got ${signCountAfter - signCountBefore} signatures`,
     )
   }
   await driver.expectRecentRpcRequestsAuthorized(2)
