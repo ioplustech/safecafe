@@ -435,7 +435,7 @@
   "sourceCode": "소스 코드",
   "githubRepository": "ioplustech/safecafe",
   "customRpcTitle": "사용자 RPC",
-  "customRpcDescription": "Safecafe의 인증 RPC 게이트웨이를 사용하고 싶지 않다면 직접 Ethereum Mainnet RPC를 설정하세요. 검증 후 체인 조회, 사전 검사, 영수증 폴링은 사용자 RPC를 우선 사용합니다.",
+  "customRpcDescription": "Safecafe의 인증 RPC 게이트웨이를 사용하고 싶지 않다면 직접 Ethereum Mainnet RPC를 설정하세요. 검증 후 온체인 RPC 조회, 사전 시뮬레이션, 영수증 폴링, ENS 검증은 사용자 RPC를 우선 사용합니다. 검증자 메타데이터, 보상 증명, 가격, Safe 검색은 여전히 Safecafe 읽기 API나 공개 소스를 사용할 수 있습니다.",
   "customRpcPlaceholder": "Ethereum Mainnet RPC URL",
   "customRpcSave": "검증 및 저장",
   "customRpcClear": "지우기",

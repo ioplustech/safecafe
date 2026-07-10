@@ -435,7 +435,7 @@
   "sourceCode": "源码",
   "githubRepository": "ioplustech/safecafe",
   "customRpcTitle": "自定义 RPC",
-  "customRpcDescription": "如果你不想使用 Safecafe 的鉴权 RPC 网关，可以配置自己的以太坊主网 RPC。验证通过后，读链、预检和交易确认会优先使用你的 RPC。",
+  "customRpcDescription": "如果你不想使用 Safecafe 的鉴权 RPC 网关，可以配置自己的以太坊主网 RPC。验证通过后，链上 RPC 读取、预检模拟、交易确认轮询和 ENS 校验会优先使用你的 RPC。验证者元数据、奖励证明、价格和 Safe 发现仍可能使用 Safecafe 读接口或公共数据源。",
   "customRpcPlaceholder": "以太坊主网 RPC 地址",
   "customRpcSave": "验证并保存",
   "customRpcClear": "清除",

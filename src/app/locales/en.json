@@ -435,7 +435,7 @@
   "sourceCode": "Source code",
   "githubRepository": "ioplustech/safecafe",
   "customRpcTitle": "Custom RPC",
-  "customRpcDescription": "If you prefer not to use Safecafe's authenticated RPC gateway, configure your own Ethereum Mainnet RPC. After verification, chain reads, pre-flight checks, and receipt polling prefer your RPC.",
+  "customRpcDescription": "If you prefer not to use Safecafe's authenticated RPC gateway, configure your own Ethereum Mainnet RPC. After verification, on-chain RPC reads, pre-flight simulation, receipt polling, and ENS checks prefer your RPC. Validator metadata, reward proofs, prices, and Safe discovery may still use Safecafe read APIs or public sources.",
   "customRpcPlaceholder": "Ethereum Mainnet RPC URL",
   "customRpcSave": "Verify & save",
   "customRpcClear": "Clear",

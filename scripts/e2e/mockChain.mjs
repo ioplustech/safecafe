@@ -1,8 +1,17 @@
-import { decodeFunctionData, encodeFunctionResult, getAddress, isAddressEqual, numberToHex, parseAbi } from "viem"
+import {
+  decodeFunctionData,
+  encodeFunctionResult,
+  getAddress,
+  isAddressEqual,
+  multicall3Abi,
+  numberToHex,
+  parseAbi,
+} from "viem"
 
 const eth = 10n ** 18n
 
 export const mockContracts = {
+  multicall3: "0xcA11bde05977b3631167028862bE2a173976CA11",
   safeToken: "0x5aFE3855358E112B5647B952709E6165e1c1eEEe",
   staking: "0x115E78f160e1E3eF163B05C84562Fa16fA338509",
   merkleDrop: "0xe5139Fc0FB8eae81e30d8a85C22E88c6757120f2",
@@ -409,6 +418,20 @@ export function createMockChain(seed = {}) {
 
   function simulateCall(from, to, data) {
     if (!to || !data || data === "0x") return "0x"
+    if (isAddressEqual(to, mockContracts.multicall3)) {
+      const decoded = decodeFunctionData({ abi: multicall3Abi, data })
+      if (decoded.functionName !== "aggregate3") throw new Error(`Unsupported Multicall3 call ${decoded.functionName}`)
+      const [calls] = decoded.args
+      const results = calls.map((call) => {
+        try {
+          return { success: true, returnData: simulateCall(from, call.target, call.callData) }
+        } catch (error) {
+          if (!call.allowFailure) throw error
+          return { success: false, returnData: "0x" }
+        }
+      })
+      return encodeFunctionResult({ abi: multicall3Abi, functionName: "aggregate3", result: results })
+    }
     const decoded = decodeKnownFunction(data)
     if (isAddressEqual(to, mockContracts.safeToken)) {
       if (decoded.functionName === "balanceOf") return encodeResult(erc20Abi, "balanceOf", state.safeBalance)

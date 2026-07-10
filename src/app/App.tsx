@@ -975,7 +975,7 @@ export function App() {
           const identity = createWalletIdentity(first, readStoredWalletSubject(first) ?? undefined)
           selectStakingSubject(identity)
           setWalletStatus("connected")
-          await refreshLiveReadsRef.current?.(identity.subject)
+          if (customRpcStatus !== "checking") await refreshLiveReadsRef.current?.(identity.subject)
         })
         .catch(() => {
           if (!cancelled) setWalletStatus("idle")
@@ -993,7 +993,7 @@ export function App() {
       setWalletStatus(first ? "connected" : "idle")
       if (first) {
         removeStorageValue(appStorageKeys.walletDisconnected)
-        void refreshLiveReadsRef.current?.(identity.subject)
+        if (customRpcStatus !== "checking") void refreshLiveReadsRef.current?.(identity.subject)
       } else {
         writeStorageFlag(appStorageKeys.walletDisconnected, true)
       }
@@ -1012,7 +1012,7 @@ export function App() {
           )
           selectStakingSubject(identity)
           setWalletStatus(first ? "connected" : "idle")
-          if (first) void refreshLiveReadsRef.current?.(identity.subject)
+          if (first && customRpcStatus !== "checking") void refreshLiveReadsRef.current?.(identity.subject)
         })
         .catch(() => undefined)
     }
@@ -1023,7 +1023,7 @@ export function App() {
       window.ethereum?.removeListener?.("accountsChanged", handleAccountsChanged)
       window.ethereum?.removeListener?.("chainChanged", handleChainChanged)
     }
-  }, [resetLiveAccountState, selectStakingSubject])
+  }, [customRpcStatus, resetLiveAccountState, selectStakingSubject])
 
   useEffect(() => {
     if (!isLanguageMenuOpen) return

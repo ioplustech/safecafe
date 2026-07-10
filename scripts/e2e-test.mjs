@@ -2,6 +2,7 @@ import { spawn } from "node:child_process"
 import { createServer } from "node:net"
 import { chromium } from "@playwright/test"
 import { privateKeyToAccount } from "viem/accounts"
+import { runProviderModeTests } from "./e2e/providerModeTests.mjs"
 
 const previewPort = await getAvailablePort()
 const baseUrl = process.env.E2E_BASE_URL || `http://127.0.0.1:${previewPort}`
@@ -78,6 +79,12 @@ const preview = process.env.E2E_BASE_URL
         "--binding",
         "SAFECAFE_AUTH_SECRET=safecafe-e2e-auth-secret",
         "--binding",
+        "SAFECAFE_LLM_API_BASE=",
+        "--binding",
+        "SAFECAFE_LLM_API_MODEL=",
+        "--binding",
+        "SAFECAFE_LLM_API_KEY=",
+        "--binding",
         "VITE_AGENT_LAUNCHER_DRAGGABLE=true",
         "--binding",
         `VITE_RPC_URL=${baseUrl}/api/rpc/ethereum`,
@@ -131,26 +138,15 @@ try {
     throw new Error(`Unexpected browser console errors: ${consoleErrors.join("\n")}`)
   }
 
-  const apiResponse = await page.request.post(`${baseUrl}/api/agent`, {
+  const anonymousAgentResponse = await page.request.post(`${baseUrl}/api/agent`, {
     data: { message: "help me stake", messages: [], context: { validatorLabels: [] } },
   })
-  if (!apiResponse.ok()) throw new Error(`Expected /api/agent to be available, got ${apiResponse.status()}`)
-  const apiJson = await apiResponse.json()
-  if (typeof apiJson.content !== "string" || apiJson.content.length === 0) {
-    throw new Error("Expected /api/agent to return content")
+  if (anonymousAgentResponse.status() !== 401) {
+    throw new Error(`Expected anonymous /api/agent to require authentication, got ${anonymousAgentResponse.status()}`)
   }
-  const streamResponse = await page.request.post(`${baseUrl}/api/agent`, {
-    headers: { accept: "text/event-stream" },
-    data: {
-      message: "help me stake",
-      stream: true,
-      messages: [],
-      context: { agentAccess: "locked", validatorLabels: [] },
-    },
-  })
-  const streamBody = await streamResponse.text()
-  if (!streamBody.includes('"type":"thinking"') || !streamBody.includes('"type":"final"')) {
-    throw new Error("Expected /api/agent stream to include thinking and final events")
+  const anonymousAgentJson = await anonymousAgentResponse.json()
+  if (anonymousAgentJson.code !== "agent_auth_required") {
+    throw new Error(`Expected agent_auth_required, got ${JSON.stringify(anonymousAgentJson)}`)
   }
 
   const testAccount = privateKeyToAccount(`0x${"22".repeat(32)}`)
@@ -174,6 +170,44 @@ try {
   })
   if (!verifyResponse.ok()) throw new Error(`Expected /api/auth/verify to work, got ${verifyResponse.status()}`)
   const session = await verifyResponse.json()
+  const agentContext = {
+    account: testAccount.address,
+    accountConnected: true,
+    agentAccess: "eligible",
+    hasLiveSnapshot: true,
+    subjectAccount: testAccount.address,
+    subjectKind: "self",
+    validatorLabels: [],
+  }
+  const apiResponse = await page.request.post(`${baseUrl}/api/agent`, {
+    headers: { authorization: `Bearer ${session.token}` },
+    data: { message: "help me stake", messages: [], context: agentContext },
+  })
+  if (!apiResponse.ok()) throw new Error(`Expected authenticated /api/agent to work, got ${apiResponse.status()}`)
+  const apiJson = await apiResponse.json()
+  if (typeof apiJson.content !== "string" || apiJson.content.length === 0) {
+    throw new Error("Expected authenticated /api/agent to return content")
+  }
+  const streamResponse = await page.request.post(`${baseUrl}/api/agent`, {
+    headers: { accept: "text/event-stream", authorization: `Bearer ${session.token}` },
+    data: {
+      message: "help me stake",
+      stream: true,
+      messages: [],
+      context: agentContext,
+    },
+  })
+  if (!streamResponse.ok()) {
+    throw new Error(`Expected authenticated /api/agent stream to work, got ${streamResponse.status()}`)
+  }
+  const streamBody = await streamResponse.text()
+  if (
+    !streamBody.includes('"type":"delta"') ||
+    !streamBody.includes('"type":"final"') ||
+    !streamBody.includes('"source":"fallback"')
+  ) {
+    throw new Error("Expected authenticated /api/agent fallback stream to include delta and final events")
+  }
   const rpcResponse = await page.request.post(`${baseUrl}/api/rpc/ethereum`, {
     headers: { authorization: `Bearer ${session.token}` },
     data: { jsonrpc: "2.0", id: 1, method: "eth_blockNumber", params: [] },
@@ -544,6 +578,13 @@ try {
             merkleRoot: `0x${"11".repeat(32)}`,
             withdrawDelay: "604800",
           },
+          rewardProof: {
+            cumulativeAmount: "95000000000000000000",
+            merkleRoot: `0x${"11".repeat(32)}`,
+            proof: [],
+          },
+          rewardProofStatus: "available",
+          rewards: "95000000000000000000",
           snapshot: {
             cumulativeClaimed: "0",
             nextClaimableWithdrawal: { amount: "210000000000000000000", claimableAt: "0" },
@@ -631,7 +672,7 @@ try {
         throw new Error(`Expected the manual rewards flow not to expose "${forbidden}"`)
       }
     }
-    await actionPage.getByRole("button", { name: "Claim Rewards" }).click()
+    await actionPage.getByRole("button", { name: "Claim to wallet" }).last().click()
     await actionPage.waitForFunction(() => window.__walletCalls?.sendTransaction === 1)
     const actionWalletCalls = await actionPage.evaluate(() => window.__walletCalls)
     if (actionWalletCalls.personalSign < 1) {
@@ -639,7 +680,7 @@ try {
         `Expected manual rewards action to authenticate the RPC gateway, got ${actionWalletCalls.personalSign}`,
       )
     }
-    await actionPage.getByText("Submitted").waitFor()
+    await actionPage.getByText(/Submitted Claim Merkle rewards:/).waitFor()
     if (actionErrors.length > 0) {
       throw new Error(`Unexpected manual action page errors: ${actionErrors.join("\n")}`)
     }
@@ -689,7 +730,7 @@ try {
   if (!focusInsideDialog) throw new Error("Expected Tab focus to stay inside the modal agent dialog")
   await dialog.getByText("Tell me what you want to do with your SAFE staking position.").waitFor()
   await dialog.getByText("Connect a wallet to start chatting").waitFor()
-  await dialog.getByText("After connecting, it can plan from live SAFE balance").waitFor()
+  await dialog.getByText("After connecting, it can prepare actions from live SAFE balance").waitFor()
   if ((await dialog.getByRole("button", { name: "Claim rewards" }).count()) > 0) {
     throw new Error("Expected disconnected agent prompt chips to stay hidden")
   }
@@ -806,9 +847,7 @@ try {
 
   await dialog.getByRole("button", { name: "Close agent" }).click()
   await dialog.waitFor({ state: "hidden" })
-  if (!(await launcher.evaluate((element) => element === document.activeElement))) {
-    throw new Error("Expected focus to return to the agent launcher after closing the dialog")
-  }
+  await page.waitForFunction(() => document.activeElement?.classList.contains("agent-launcher"))
   await launcher.click()
   await dialog.waitFor({ state: "visible" })
 
@@ -881,6 +920,7 @@ try {
   if (zhConsoleErrors.length > 0) {
     throw new Error(`Unexpected zh browser console errors: ${zhConsoleErrors.join("\n")}`)
   }
+  await runProviderModeTests({ baseUrl, browser })
 } finally {
   await browser?.close()
   preview?.kill("SIGTERM")

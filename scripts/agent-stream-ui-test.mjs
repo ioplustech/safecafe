@@ -82,11 +82,16 @@ try {
   await driver.open()
   await driver.connectWallet()
   await page.getByRole("button", { name: /Staking Agent/i }).click()
-  await page
-    .getByRole("textbox", {
-      name: /Message the staking agent|给质押 Agent 发消息|Nachricht an den Staking Agent|스테이킹 Agent에 메시지 보내기/i,
-    })
-    .fill("hello")
+  const dialog = page.getByRole("dialog", { name: /Staking Agent|质押 Agent|Staking-Agent|스테이킹 Agent/i })
+  await dialog.getByRole("button", { name: /Sign in|签名登录|Einloggen|로그인/i }).click()
+  const composer = dialog.getByRole("textbox", {
+    name: /Message the staking agent|给质押 Agent 发消息|Nachricht an den Staking Agent|스테이킹 Agent에 메시지 보내기/i,
+  })
+  await page.waitForFunction(() => {
+    const field = document.querySelector(".agent-composer textarea")
+    return field instanceof HTMLTextAreaElement && !field.disabled
+  })
+  await composer.fill("hello")
   await page.getByRole("button", { name: /Send|发送|Senden|보내기/i }).click()
   await page.getByRole("button", { name: /Stop|停止|Stoppen|중지/i }).click()
   const stopConfirm = page.getByRole("alertdialog", {

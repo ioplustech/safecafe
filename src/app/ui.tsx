@@ -532,7 +532,7 @@ export function CopyActionButton({
         aria-label={label}
       >
         {copied ? <Check size={size} /> : <Copy size={size} />}
-        {children}
+        {children ? <span className="inline-action-button-content">{children}</span> : null}
       </button>
     </Tooltip>
   )
@@ -567,7 +567,7 @@ export function ExternalActionButton({
           aria-label={label}
         >
           {icon}
-          {children}
+          {children ? <span className="inline-action-button-content">{children}</span> : null}
         </a>
       </Tooltip>
     )
@@ -585,7 +585,7 @@ export function ExternalActionButton({
         aria-label={label}
       >
         {icon}
-        {children}
+        {children ? <span className="inline-action-button-content">{children}</span> : null}
       </button>
     </Tooltip>
   )
