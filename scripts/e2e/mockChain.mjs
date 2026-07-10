@@ -76,6 +76,7 @@ export function createMockChain(seed = {}) {
     safes: seed.safes ?? ["0x1111111111111111111111111111111111111111"],
     safeOwners: (seed.safeOwners ?? [defaultAccount]).map((owner) => getAddress(owner)),
     safeThreshold: seed.safeThreshold ?? 1n,
+    safeProposals: new Map(),
     agentRequests: 0,
     rpcCalls: [],
     rpcRequests: [],
@@ -463,8 +464,61 @@ export function createMockChain(seed = {}) {
       ({ account: injectedAccount }) => {
         const listeners = new Map()
         let txNonce = 0
+        const safeProposalHash = `0x${"ab".repeat(32)}`
         window.__mockWalletPersonalSignCount = 0
         window.__mockWalletTransactions = []
+        window.__safecafeSafeMultisigTestKit = {
+          createSafeApiKit() {
+            return {
+              async confirmTransaction(safeTxHash, signature) {
+                await window.safecafeConfirmMockSafeProposal({ safeTxHash, signature })
+                return { signature }
+              },
+              async getTransaction(safeTxHash) {
+                return window.safecafeGetMockSafeProposal(safeTxHash)
+              },
+              async getTransactionConfirmations(safeTxHash) {
+                return window.safecafeGetMockSafeProposalConfirmations(safeTxHash)
+              },
+              async proposeTransaction(input) {
+                await window.safecafeProposeMockSafeTransaction(input)
+              },
+            }
+          },
+          async createSafeProtocolKit({ safeAddress, signer }) {
+            return {
+              async createTransaction({ transactions }) {
+                return { data: { transactions }, safeAddress }
+              },
+              async executeTransaction(transaction) {
+                txNonce += 1
+                const hash = `0x${txNonce.toString(16).padStart(64, "0")}`
+                await window.safecafeApplyMockSafeProposal({ hash, transaction })
+                window.__mockWalletTransactions.push({
+                  hash,
+                  tx: { data: "0x", safeTransaction: transaction, to: safeAddress },
+                })
+                return { hash }
+              },
+              async getChainId() {
+                return 1n
+              },
+              async getThreshold() {
+                return window.safecafeGetMockSafeThreshold()
+              },
+              async getTransactionHash() {
+                return safeProposalHash
+              },
+              async isOwner(owner) {
+                return window.safecafeIsMockSafeOwner(owner)
+              },
+              async signHash() {
+                window.__mockWalletPersonalSignCount += 1
+                return { data: `${signer}:safe-signature` }
+              },
+            }
+          },
+        }
         window.ethereum = {
           request: async ({ method, params }) => {
             if (method === "eth_chainId") return "0x1"
@@ -502,6 +556,94 @@ export function createMockChain(seed = {}) {
       { account },
     )
     await page.exposeFunction("safecafeApplyMockTransaction", ({ hash, tx }) => applyTransaction(account, tx, hash))
+    await page.exposeFunction("safecafeApplyMockSafeProposal", ({ hash, transaction }) =>
+      applySafeProposalTransaction(account, transaction, hash),
+    )
+    await page.exposeFunction("safecafeConfirmMockSafeProposal", ({ safeTxHash, signature }) =>
+      confirmSafeProposal(safeTxHash, signature),
+    )
+    await page.exposeFunction("safecafeGetMockSafeProposal", (safeTxHash) => getSafeProposal(safeTxHash))
+    await page.exposeFunction("safecafeGetMockSafeProposalConfirmations", (safeTxHash) => ({
+      results: [...(state.safeProposals.get(safeTxHash)?.confirmations.values() ?? [])],
+    }))
+    await page.exposeFunction("safecafeGetMockSafeThreshold", () => Number(state.safeThreshold))
+    await page.exposeFunction("safecafeIsMockSafeOwner", (owner) =>
+      state.safeOwners.some((safeOwner) => isAddressEqual(safeOwner, owner)),
+    )
+    await page.exposeFunction("safecafeProposeMockSafeTransaction", (input) => proposeSafeTransaction(input))
+  }
+
+  function proposeSafeTransaction(input) {
+    const confirmations = new Map()
+    confirmations.set(getAddress(input.senderAddress), {
+      owner: getAddress(input.senderAddress),
+      signature: input.senderSignature,
+    })
+    state.safeProposals.set(input.safeTxHash, {
+      confirmations,
+      data: input.safeTransactionData,
+      safeAddress: getAddress(input.safeAddress),
+      transactionHash: input.safeTxHash,
+    })
+  }
+
+  function confirmSafeProposal(safeTxHash, signature) {
+    const proposal = state.safeProposals.get(safeTxHash)
+    if (!proposal) throw new Error(`Unknown Safe proposal ${safeTxHash}`)
+    const [owner] = String(signature).split(":")
+    proposal.confirmations.set(getAddress(owner), {
+      owner: getAddress(owner),
+      signature,
+    })
+  }
+
+  function getSafeProposal(safeTxHash) {
+    const proposal = state.safeProposals.get(safeTxHash)
+    if (!proposal) throw new Error(`Unknown Safe proposal ${safeTxHash}`)
+    return {
+      confirmations: [...proposal.confirmations.values()],
+      safeAddress: proposal.safeAddress,
+      transactionHash: proposal.transactionHash,
+      ...proposal.data,
+    }
+  }
+
+  function applySafeProposalTransaction(account, transaction, hash) {
+    const proposal = transaction?.transactionHash ? transaction : getSafeProposal(transaction?.transactionHash)
+    const txs = proposal.transactions ?? proposal.data?.transactions ?? []
+    ensure(txs.length > 0, "Safe proposal has no transactions")
+    for (const tx of txs) {
+      const to = getAddress(tx.to)
+      const decoded = decodeKnownFunction(tx.data)
+      if (isAddressEqual(to, mockContracts.safeToken) && decoded.functionName === "approve") {
+        const [spender, amount] = decoded.args
+        ensure(isAddressEqual(spender, mockContracts.staking), "Only staking allowance is supported")
+        state.stakingAllowance = amount
+      } else if (isAddressEqual(to, mockContracts.staking)) {
+        applyStakingTransaction(state.safes[0], decoded)
+      } else if (isAddressEqual(to, mockContracts.merkleDrop)) {
+        applyMerkleTransaction(state.safes[0], decoded)
+      } else {
+        throw new Error(`Unsupported Safe proposal target ${to}`)
+      }
+    }
+    state.blockNumber += 1n
+    receipts.set(hash, {
+      blockHash: `0x${"aa".repeat(32)}`,
+      blockNumber: numberToHex(state.blockNumber),
+      contractAddress: null,
+      cumulativeGasUsed: "0x5208",
+      effectiveGasPrice: "0x1",
+      from: getAddress(account),
+      gasUsed: "0x5208",
+      logs: [],
+      logsBloom: `0x${"00".repeat(256)}`,
+      status: "0x1",
+      to: proposal.safeAddress,
+      transactionHash: hash,
+      transactionIndex: "0x0",
+      type: "0x2",
+    })
   }
 
   function applyTransaction(from, tx, hash) {

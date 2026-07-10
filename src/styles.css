@@ -1321,6 +1321,48 @@ textarea:focus-visible {
   background: var(--red);
 }
 
+.execution-safe-proposal {
+  display: grid;
+  gap: 10px;
+  border: 1px solid rgba(185, 124, 35, 0.2);
+  border-radius: 10px;
+  padding: 10px;
+  background: rgba(255, 249, 238, 0.72);
+}
+
+.execution-safe-proposal > span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.execution-safe-proposal strong {
+  color: #7c4a03;
+  font-size: 12px;
+}
+
+.execution-safe-proposal small {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.execution-safe-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+}
+
+.primary-button.compact,
+.soft-button.compact {
+  min-height: 30px;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
 .chain-progress-heading {
   display: flex;
   align-items: flex-start;

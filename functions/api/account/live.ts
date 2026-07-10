@@ -1,11 +1,8 @@
 import { handleAccountLiveRequest } from "../../../src/server/accountLive"
+import type { RpcGatewayEnv } from "../../../src/server/serverEnv"
 
-export const onRequestGet: PagesFunction<{
-  SAFECAFE_MOCK_ACCOUNT?: string
-  SAFECAFE_MOCK_ACCOUNT_LIVE?: string
-  SAFECAFE_RPC_URL?: string
-  SAFECAFE_RPC_URLS?: string
-}> = async ({ request, env }) => handleAccountLiveRequest(request, env)
+export const onRequestGet: PagesFunction<RpcGatewayEnv> = async ({ request, env }) =>
+  handleAccountLiveRequest(request, env)
 
 export const onRequestPost: PagesFunction = async () =>
   new Response(JSON.stringify({ error: "Method not allowed" }), {

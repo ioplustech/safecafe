@@ -23,6 +23,7 @@ import { type KeyboardEvent, useEffect, useId, useMemo, useRef, useState } from 
 import { type Address, isAddress } from "viem"
 import {
   type AgentAmount,
+  AgentApiError,
   type AgentContext,
   type AgentIntent,
   type AgentPlan,
@@ -100,6 +101,9 @@ export type AgentChatDialogProps = {
   onAuthenticateAgent: () => Promise<string | null>
   onClose: () => void
   onConnectWallet: () => Promise<void>
+  onContinueSafeProposal: () => void
+  onCopySafeTxHash: (safeTxHash: string) => void
+  onExportSafePayload: () => void
   onRefreshLiveData: () => Promise<AgentContext | null>
   onSimulatePlan: (plan: TxPlan) => Promise<TxPlan>
   onSubmitPlan: (plan: TxPlan) => Promise<void>
@@ -416,11 +420,11 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
       if (requestSeqRef.current === requestId) {
         updateMessage(sessionId, assistantId, (item) => ({
           ...item,
-          content: props.t.agentServiceUnavailable,
+          content: resolveAgentApiErrorMessage(error, props.t),
           isLoading: false,
         }))
       }
-      source = "fallback"
+      source = null
     } finally {
       if (streamAbortRef.current === controller) streamAbortRef.current = null
       if (requestSeqRef.current === requestId) setIsStreaming(false)
@@ -911,6 +915,9 @@ export function AgentChatDialog(props: AgentChatDialogProps) {
             canUsePlan={canUsePlan}
             executionState={props.executionState}
             isSubmitting={props.isSubmitting}
+            onContinueSafeProposal={props.onContinueSafeProposal}
+            onCopySafeTxHash={props.onCopySafeTxHash}
+            onExportSafePayload={props.onExportSafePayload}
             txProgress={props.txProgress}
             safeSubject={props.context.subjectKind === "safe"}
             onAcceptWarnings={(value) => updateActiveSession((session) => ({ ...session, warningsAccepted: value }))}
@@ -1201,6 +1208,9 @@ function AgentPlanCard(props: {
   canUsePlan: boolean
   executionState: ActionExecutionSummary | null
   isSubmitting: boolean
+  onContinueSafeProposal: () => void
+  onCopySafeTxHash: (safeTxHash: string) => void
+  onExportSafePayload: () => void
   txProgress: string
   safeSubject: boolean
   onAcceptWarnings: (value: boolean) => void
@@ -1265,7 +1275,13 @@ function AgentPlanCard(props: {
         </div>
       )}
       {!props.isSubmitting && props.executionState?.action === "agent-plan" && (
-        <ExecutionSummaryCard summary={props.executionState} t={props.t} />
+        <ExecutionSummaryCard
+          summary={props.executionState}
+          t={props.t}
+          onContinueSafeProposal={props.onContinueSafeProposal}
+          onCopySafeTxHash={props.onCopySafeTxHash}
+          onExportSafePayload={props.onExportSafePayload}
+        />
       )}
       {props.warnings.length > 0 && (
         <label className="agent-warning-ack">
@@ -1555,6 +1571,25 @@ function coerceAgentValidator(input: unknown): AgentValidatorRef | null {
     return { type, value: value as Address }
   }
   return null
+}
+
+function formatAgentResetTime(resetAt: string | undefined) {
+  if (!resetAt) return "later"
+  const date = new Date(resetAt)
+  if (Number.isNaN(date.getTime())) return "later"
+  return date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })
+}
+
+function resolveAgentApiErrorMessage(error: unknown, t: MessageBundle) {
+  if (!(error instanceof AgentApiError)) return t.agentServiceUnavailable
+  if (error.code === "agent_daily_limit_exceeded") {
+    return t.agentDailyLimitExceeded.replace("{resetAt}", formatAgentResetTime(error.resetAt))
+  }
+  if (error.code === "agent_access_denied") return t.agentAccessDeniedNoSafe
+  if (error.code === "agent_auth_mismatch") return t.agentAuthMismatch
+  if (error.code === "agent_invalid_context") return t.agentInvalidContext
+  if (error.code === "agent_auth_required") return t.agentAuthSessionRequired
+  return error.message || t.agentServiceUnavailable
 }
 
 function readRecord(input: unknown): Record<string, unknown> | null {

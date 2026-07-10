@@ -23,6 +23,9 @@ export type AgentLauncherProps = {
   rpcAuthToken: string | null
   onAuthenticateAgent: () => Promise<string | null>
   onConnectWallet: () => Promise<void>
+  onContinueSafeProposal: () => void
+  onCopySafeTxHash: (safeTxHash: string) => void
+  onExportSafePayload: () => void
   onOpen?: () => void
   onRefreshLiveData: () => Promise<AgentContext | null>
   onSimulatePlan: (plan: TxPlan) => Promise<TxPlan>
@@ -161,6 +164,9 @@ export function AgentLauncher(props: AgentLauncherProps) {
           onAuthenticateAgent={props.onAuthenticateAgent}
           onClose={() => setIsOpen(false)}
           onConnectWallet={props.onConnectWallet}
+          onContinueSafeProposal={props.onContinueSafeProposal}
+          onCopySafeTxHash={props.onCopySafeTxHash}
+          onExportSafePayload={props.onExportSafePayload}
           onRefreshLiveData={props.onRefreshLiveData}
           onSimulatePlan={props.onSimulatePlan}
           onSubmitPlan={props.onSubmitPlan}

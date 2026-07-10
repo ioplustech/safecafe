@@ -165,6 +165,45 @@ export const agentToolDefinitions: AgentToolDefinition[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "collect_user_feedback",
+      description:
+        "Record product feedback when the user complains, reports a bug, suggests an improvement, or requests a product/UX change. Do not use for normal staking actions unless the message includes feedback.",
+      parameters: {
+        type: "object",
+        properties: {
+          area: {
+            type: "string",
+            description:
+              "Short product area, such as agent, staking, wallet, safe_multisig, validators, performance, ipfs, cli, or other.",
+          },
+          category: {
+            type: "string",
+            enum: ["bug", "complaint", "feature_request", "other", "ux"],
+            description: "Feedback category inferred from the user's message.",
+          },
+          originalText: {
+            type: "string",
+            description: "The user's original feedback text, excluding private keys, seed phrases, or credentials.",
+          },
+          severity: {
+            type: "string",
+            enum: ["low", "medium", "high"],
+            description:
+              "Impact level. Use high only for blocked funds, broken transactions, or major usability failures.",
+          },
+          summary: {
+            type: "string",
+            description: "Brief neutral summary of the feedback.",
+          },
+        },
+        required: ["category", "originalText", "severity", "summary"],
+        additionalProperties: false,
+      },
+    },
+  },
 ]
 
 export function buildAgentRuntimeContext(context: AgentRuntimeContextInput) {
@@ -215,6 +254,7 @@ export function buildAgentSystemPrompt() {
     "- refresh_live_staking_context: ask the app client to force-refresh live account data and update the page before showing the latest account summary.",
     "- list_supported_staking_actions: list the staking actions the app can prepare.",
     "- prepare_staking_action: convert a concrete user request into a structured staking action intent for the app to check, simulate, and present as an action card for wallet review.",
+    "- collect_user_feedback: record product feedback when the user complains, reports a bug, suggests an improvement, or asks for a product or UX change.",
     "- wallet_confirmation: the user's wallet is the only component that can approve, sign, and submit on-chain actions.",
     "",
     "How to use tool information:",
@@ -222,6 +262,7 @@ export function buildAgentSystemPrompt() {
     "- Call refresh_live_staking_context when the user asks for realtime, latest, refreshed, reloaded, current on-chain, or just-updated account data. After calling it, say the app is refreshing and the refreshed summary will be shown by the app.",
     "- Call list_supported_staking_actions when the user asks what you can do.",
     "- Call prepare_staking_action when the user asks for a concrete supported staking action, including preset-style requests such as Claim rewards, Stake 100 SAFE, Restake rewards, or Move stake.",
+    "- Call collect_user_feedback when the user expresses dissatisfaction, reports a broken flow, proposes a UX/product improvement, or says they want something changed. Record their original feedback and a short summary, then continue helping normally.",
     "- For Stake 100 SAFE or Restake rewards without a validator, use best-active only if the user has not asked to choose manually. For Move stake without amount/source/destination, ask for the missing details.",
     "- If a concrete action is possible, call prepare_staking_action and then explain that the app will check it, simulate it, and show an action card for wallet review.",
     "- If required data is missing, ask for the single most important missing detail, such as amount, validator, source validator, destination validator, or wallet connection.",
@@ -234,6 +275,7 @@ export function buildAgentSystemPrompt() {
     "- Never say you can sign, submit, broadcast, execute, or complete a transaction for the user.",
     "- Never output calldata, transaction hex, or raw transaction payloads.",
     "- Never ask for seed phrases, private keys, or unrestricted wallet permissions.",
+    "- Never record seed phrases, private keys, API keys, auth tokens, signatures, or passwords in collect_user_feedback. If the user's feedback contains such data, omit or summarize the sensitive value.",
     "- Always state that every on-chain action requires explicit wallet confirmation.",
     "- Treat provided balances, rewards, withdrawals, and validator positions as the authenticated current user's visible app data for this request.",
     "- Refer to provided addresses as the connected wallet or selected Safe account. Do not reveal unrelated addresses, private keys, seed phrases, or data that is not present in runtime context.",

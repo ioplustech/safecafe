@@ -89,6 +89,7 @@ import {
   readCurrentReleaseTrust,
 } from "./releaseTrust"
 import { clearRpcSession, ensureRpcSession, readRpcSession } from "./rpcAuth"
+import { submitSafeMultisigPlan } from "./safeMultisig"
 import { fetchSafeUsdPrice } from "./safePriceApi"
 import {
   type AccountSummary,
@@ -112,6 +113,7 @@ const navPaths = createPathMap(navItems)
 type ValidatorSort = "stake" | "participation" | "commission" | "name" | "yourStake"
 type WalletStatus = "idle" | "restoring" | "connecting" | "connected"
 type CustomRpcStatus = "checking" | "idle" | "invalid" | "valid"
+type UserSafeApiStatus = "checking" | "idle" | "invalid" | "valid"
 type UserLlmStatus = "checking" | "idle" | "invalid" | "valid"
 type UserLlmDraft = {
   apiBase: string
@@ -239,6 +241,13 @@ function createExecutionState(
   }
 }
 
+function markSteps(
+  steps: ActionExecutionSummary["steps"],
+  status: ActionExecutionSummary["steps"][number]["status"],
+): ActionExecutionSummary["steps"] {
+  return steps.map((step) => ({ ...step, status }))
+}
+
 function dashboardActionFromPath(pathname: string): DashboardAction {
   const normalized = pathname.replace(/\/+$/, "") || "/"
   if (normalized === "/unstake") return "unstake"
@@ -304,6 +313,7 @@ export function App() {
   const [amount, setAmount] = useState("")
   const [txPlan, setTxPlan] = useState<TxPlan | null>(null)
   const [txExecution, setTxExecution] = useState<ActionExecutionSummary | null>(null)
+  const [safeMultisigPlan, setSafeMultisigPlan] = useState<TxPlan | null>(null)
   const [modal, setModal] = useState<Modal>(null)
   const [showOnlyActive, setShowOnlyActive] = useState(() => readStorageFlag(appStorageKeys.validatorsActiveOnly))
   const [validatorQuery, setValidatorQuery] = useState(() => readStorageText(appStorageKeys.validatorQuery) ?? "")
@@ -333,6 +343,14 @@ export function App() {
     readStorageText(appStorageKeys.customRpcUrl)?.trim() ? "checking" : "idle",
   )
   const [customRpcMessage, setCustomRpcMessage] = useState("")
+  const [userSafeApiKey, setUserSafeApiKey] = useState(
+    () => readStorageText(appStorageKeys.userSafeApiKey)?.trim() ?? "",
+  )
+  const [userSafeApiKeyDraft, setUserSafeApiKeyDraft] = useState("")
+  const [userSafeApiStatus, setUserSafeApiStatus] = useState<UserSafeApiStatus>(() =>
+    readStorageText(appStorageKeys.userSafeApiKey)?.trim() ? "valid" : "idle",
+  )
+  const [userSafeApiMessage, setUserSafeApiMessage] = useState("")
   const [userLlmConfig, setUserLlmConfig] = useState<UserLlmConfig | null>(() => readStoredUserLlmConfig())
   const [userLlmDraft, setUserLlmDraft] = useState<UserLlmDraft>(() => createUserLlmDraft(readStoredUserLlmConfig()))
   const [userLlmStatus, setUserLlmStatus] = useState<UserLlmStatus>(() => (userLlmConfig ? "valid" : "idle"))
@@ -696,6 +714,7 @@ export function App() {
 
   const updateAmount = useCallback((nextAmount: string) => {
     setAmount(nextAmount)
+    setSafeMultisigPlan(null)
     setTxPlan(null)
     setTxExecution(null)
   }, [])
@@ -703,6 +722,7 @@ export function App() {
   const updateValidator = useCallback((nextValidator: Address) => {
     setValidator(nextValidator)
     writeStorageAddress(appStorageKeys.selectedValidator, nextValidator)
+    setSafeMultisigPlan(null)
     setTxPlan(null)
     setTxExecution(null)
   }, [])
@@ -736,6 +756,7 @@ export function App() {
     setLiveBlock(null)
     setLiveDataMeta(null)
     setLiveError("")
+    setSafeMultisigPlan(null)
     setTxPlan(null)
     setTxExecution(null)
     setTxProgress("")
@@ -1236,6 +1257,46 @@ export function App() {
     toast(t.customRpcCleared, "info")
   }
 
+  function updateUserSafeApiKeyDraft(value: string) {
+    setUserSafeApiKeyDraft(value)
+    setUserSafeApiStatus("idle")
+    setUserSafeApiMessage("")
+  }
+
+  async function saveUserSafeApiKey() {
+    const candidate = userSafeApiKeyDraft.trim() || userSafeApiKey
+    if (!candidate) {
+      setUserSafeApiStatus("invalid")
+      setUserSafeApiMessage(t.userSafeApiKeyRequired)
+      toast(t.userSafeApiKeyRequired, "warning")
+      return
+    }
+    setUserSafeApiStatus("checking")
+    setUserSafeApiMessage(t.userSafeApiChecking)
+    try {
+      await verifyUserSafeApiKey(candidate, t)
+      setUserSafeApiKey(candidate)
+      setUserSafeApiKeyDraft("")
+      setUserSafeApiStatus("valid")
+      setUserSafeApiMessage(t.userSafeApiActive)
+      writeStorageText(appStorageKeys.userSafeApiKey, candidate)
+      toast(t.userSafeApiSaved, "success")
+    } catch (error) {
+      setUserSafeApiStatus("invalid")
+      setUserSafeApiMessage(error instanceof Error ? error.message : t.userSafeApiFailed)
+      toast(error instanceof Error ? error.message : t.userSafeApiFailed, "warning")
+    }
+  }
+
+  function clearUserSafeApiKey() {
+    setUserSafeApiKey("")
+    setUserSafeApiKeyDraft("")
+    setUserSafeApiStatus("idle")
+    setUserSafeApiMessage("")
+    removeStorageValue(appStorageKeys.userSafeApiKey)
+    toast(t.userSafeApiCleared, "info")
+  }
+
   function updateUserLlmDraft(field: keyof UserLlmDraft, value: string) {
     setUserLlmDraft((current) => ({ ...current, [field]: value }))
     setUserLlmStatus("idle")
@@ -1384,6 +1445,7 @@ export function App() {
       return
     }
     setAction(nextAction)
+    setSafeMultisigPlan(null)
     setTxPlan(null)
     setTxExecution(null)
     setIsSubmitting(true)
@@ -1436,6 +1498,7 @@ export function App() {
       return
     }
     setAction("claim-rewards")
+    setSafeMultisigPlan(null)
     setTxPlan(null)
     setTxExecution(null)
     setIsSubmitting(true)
@@ -1574,14 +1637,21 @@ export function App() {
         simulation: planToSubmit.simulation,
       }
       setTxPlan(executablePlan)
+      setSafeMultisigPlan(null)
       setTxExecution(createExecutionState(executionAction, planToSubmit.title, reconciled.steps))
       let confirmedTxCount = 0
       if (!isSelfSubject(walletIdentity)) {
         const safeMode = await resolveSafeExecutionMode({ client: publicClient, safe: subjectAccount, signer: account })
         if (safeMode.kind === "not-owner") throw new Error(t.safeOwnerRequired)
         if (safeMode.kind === "multi-owner") {
-          exportSafePayload(executablePlan)
-          toast(`${t.safeMultisigThresholdExport} (${safeMode.threshold.toString()}/${safeMode.owners.length})`, "info")
+          setSafeMultisigPlan(executablePlan)
+          await submitSafeMultisigProposal({
+            authToken: userSafeApiKey ? null : (rpcAuthToken ?? (await ensureRpcAuthTokenForCurrentWallet())),
+            executionAction,
+            executionSteps: reconciled.steps,
+            plan: executablePlan,
+            threshold: Number(safeMode.threshold),
+          })
           return
         }
         try {
@@ -1692,6 +1762,70 @@ export function App() {
       if (!options.alreadySubmitting) setSubmittingAction(null)
       setTxProgress("")
     }
+  }
+
+  async function submitSafeMultisigProposal(params: {
+    authToken: string | null
+    executionAction: TxPlanAction | "claim-rewards-and-stake"
+    executionSteps: ActionExecutionSummary["steps"]
+    plan: TxPlan
+    threshold: number
+  }) {
+    if (!account || !subjectAccount || !window.ethereum) throw new Error(t.agentAccountChanged)
+    setTxProgress(t.safeProposalSubmitting)
+    const result = await submitSafeMultisigPlan({
+      origin: "Safecafe",
+      authToken: params.authToken,
+      plan: params.plan,
+      provider: window.ethereum,
+      safeAddress: subjectAccount,
+      safeTxErrorMessages: {
+        safe_api_key_invalid: t.safeApiKeyInvalid,
+        safe_api_key_missing: t.safeApiKeyMissing,
+        safe_tx_service_failed: t.safeTxServiceFailed,
+        safe_tx_service_rate_limited: t.safeTxServiceRateLimited,
+      },
+      signer: account,
+      userSafeApiKey,
+    })
+    if (result.mode === "executed") {
+      setTxExecution(
+        createExecutionState(params.executionAction, params.plan.title, markSteps(params.executionSteps, "done"), {
+          status: "completed",
+        }),
+      )
+      toast(`${t.safeProposalExecuted}: ${compactAddress(result.safeTxHash, 10, 8)}`, "success")
+      await refreshLiveReads(subjectAccount, { forceRefresh: true })
+      return
+    }
+    const execution = createExecutionState(params.executionAction, params.plan.title, params.executionSteps, {
+      errorMessage: t.safeProposalWaiting,
+      status: "partial",
+    })
+    setTxExecution({
+      ...execution,
+      safeProposal: {
+        confirmations: result.confirmations,
+        safeAddress: subjectAccount,
+        safeTxHash: result.safeTxHash,
+        status: "pending",
+        threshold: result.threshold || params.threshold,
+      },
+    })
+    toast(`${t.safeProposalCreated} (${result.confirmations}/${result.threshold || params.threshold})`, "success")
+  }
+
+  function continueSafeMultisigProposal() {
+    if (!safeMultisigPlan) {
+      toast(t.connectToPlan, "warning")
+      return
+    }
+    const executionAction = txExecution?.action ?? safeMultisigPlan.action
+    void submitPlan(safeMultisigPlan, {
+      actionKey: executionAction,
+      requireAuth: true,
+      skipValidation: true,
+    })
   }
 
   async function submitSafeOwnerPlan(params: {
@@ -1817,6 +1951,7 @@ export function App() {
     ) {
       updateDashboardAction(nextAction)
     }
+    setSafeMultisigPlan(null)
     setTxPlan(null)
     setTxExecution(null)
     if ((nextAction === "stake" || nextAction === "unstake") && window.location.pathname !== navPaths.dashboard) {
@@ -1841,6 +1976,7 @@ export function App() {
     if (nextAction === "stake" || nextAction === "unstake" || nextAction === "claim-rewards") {
       updateDashboardAction(nextAction)
     }
+    setSafeMultisigPlan(null)
     setTxPlan(null)
     setTxExecution(null)
     return true
@@ -2159,12 +2295,16 @@ export function App() {
             connectedAccount={connectedAccount}
             executeClaimRewardsAndStake={executeClaimRewardsAndStake}
             executeAction={executeAction}
+            executionState={txExecution}
             isLoadingValidators={isLoadingValidators}
             isSubmitting={isSubmitting}
             restakePreview={rewardsRestakePreview}
             submittingAction={submittingAction}
             modal={modal}
             onConnect={refreshOrConnect}
+            onContinueSafeProposal={continueSafeMultisigProposal}
+            onCopySafeTxHash={(safeTxHash) => void copyText(safeTxHash)}
+            onExportSafePayload={() => exportSafePayload(safeMultisigPlan ?? txPlan ?? undefined)}
             openExplorer={openExplorer}
             selectAction={selectAction}
             selectedValidator={selectedValidator}
@@ -2232,6 +2372,9 @@ export function App() {
             executeClaimRewardsAndStake={executeClaimRewardsAndStake}
             executeAction={executeAction}
             isSubmitting={isSubmitting}
+            onContinueSafeProposal={continueSafeMultisigProposal}
+            onCopySafeTxHash={(safeTxHash) => void copyText(safeTxHash)}
+            onExportSafePayload={() => exportSafePayload(safeMultisigPlan ?? txPlan ?? undefined)}
             restakePreview={rewardsRestakePreview}
             selectedValidator={selectedValidator}
             setValidator={updateValidator}
@@ -2267,6 +2410,13 @@ export function App() {
             onCustomRpcChange={updateCustomRpcDraft}
             onSaveCustomRpc={() => void saveCustomRpcUrl()}
             onClearCustomRpc={clearCustomRpcUrl}
+            userSafeApiKeyDraft={userSafeApiKeyDraft}
+            userSafeApiSaved={Boolean(userSafeApiKey)}
+            userSafeApiStatus={userSafeApiStatus}
+            userSafeApiMessage={userSafeApiMessage}
+            onUserSafeApiKeyChange={updateUserSafeApiKeyDraft}
+            onSaveUserSafeApiKey={saveUserSafeApiKey}
+            onClearUserSafeApiKey={clearUserSafeApiKey}
             userLlmDraft={userLlmDraft}
             userLlmSaved={Boolean(userLlmConfig)}
             userLlmStatus={userLlmStatus}
@@ -2349,6 +2499,9 @@ export function App() {
         onOpen={() => setModal(null)}
         onRefreshLiveData={refreshLiveDataForAgent}
         onSubmitPlan={(plan) => submitPlan(plan, { requireAuth: true })}
+        onContinueSafeProposal={continueSafeMultisigProposal}
+        onCopySafeTxHash={(safeTxHash) => void copyText(safeTxHash)}
+        onExportSafePayload={() => exportSafePayload(safeMultisigPlan ?? txPlan ?? undefined)}
       />
     </div>
   )
@@ -2675,6 +2828,27 @@ async function verifyUserLlmConfig(config: UserLlmConfig, t: MessageBundle) {
   } catch (error) {
     if (error instanceof Error && error.message.startsWith(t.userLlmVerifyFailed)) throw error
     throw new Error(t.userLlmVerifyFailed)
+  }
+}
+
+async function verifyUserSafeApiKey(apiKey: string, t: MessageBundle) {
+  try {
+    const response = await fetch("https://api.safe.global/tx-service/eth/api/v1/about", {
+      headers: {
+        accept: "application/json",
+        authorization: `Bearer ${apiKey}`,
+      },
+    })
+    if (!response.ok) {
+      if (response.status === 401 || response.status === 403) throw new Error(t.userSafeApiUnauthorized)
+      if (response.status === 429) throw new Error(t.userSafeApiRateLimited)
+      throw new Error(`${t.userSafeApiFailed} (${response.status})`)
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith(t.userSafeApiFailed)) throw error
+    if (error instanceof Error && error.message === t.userSafeApiUnauthorized) throw error
+    if (error instanceof Error && error.message === t.userSafeApiRateLimited) throw error
+    throw new Error(t.userSafeApiVerifyFailed)
   }
 }
 

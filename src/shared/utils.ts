@@ -32,3 +32,12 @@ export function resolveEnvValue(env: Record<string, string | undefined>, names: 
   }
   return undefined
 }
+
+export function resolveEnvList(env: Record<string, string | undefined>, names: readonly string[]) {
+  const value = resolveEnvValue(env, names)
+  if (!value) return []
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean)
+}

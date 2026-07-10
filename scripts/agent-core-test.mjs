@@ -44,6 +44,7 @@ import {
 import { mockAccount, mockSummary, mockValidators } from "../src/protocol/mockData.ts"
 import { handleAccountLiveRequest } from "../src/server/accountLive.ts"
 import { handleAgentApiRequest, sanitizeAgentContent } from "../src/server/agentApi.ts"
+import { handleAgentFeedbackRequest } from "../src/server/agentFeedback.ts"
 import { handleRewardProofRequest, readRewardProof } from "../src/server/rewardsProof.ts"
 import {
   handleEthereumRpcGatewayRequest,
@@ -51,6 +52,7 @@ import {
   handleRpcVerifyRequest,
 } from "../src/server/rpcGateway.ts"
 import { rpcPoolTestHooks, rpcUrls } from "../src/server/rpcPool.ts"
+import { handleSafeTxServiceRequest } from "../src/server/safeTxService.ts"
 import { handleValidatorsRequest, readValidatorMetadata, validatorMetadataTestHooks } from "../src/server/validators.ts"
 import { assertSuccessfulReceipt } from "../src/shared/cli.ts"
 
@@ -733,8 +735,8 @@ const lockedAgentResponse = await handleAgentApiRequest(
     SAFECAFE_LLM_API_KEY: "secret",
   },
 )
-assert.equal(lockedAgentResponse.status, 200)
-assert.equal((await lockedAgentResponse.json()).source, "fallback")
+assert.equal(lockedAgentResponse.status, 401)
+assert.equal((await lockedAgentResponse.json()).code, "agent_auth_required")
 
 const tooLargeResponse = await handleAgentApiRequest(
   new Request("http://localhost/api/agent", {
@@ -760,6 +762,7 @@ let reasoningJson = false
 let useToolCallJson = false
 let usePrepareToolCallJson = false
 let useRefreshToolCallJson = false
+let useFeedbackToolCallJson = false
 let useToolCallStream = false
 let lastAgentMessages = []
 let lastAgentTools = []
@@ -1111,6 +1114,44 @@ const mockFetch = async (url, init) => {
       { status: 200, headers: { "content-type": "application/json" } },
     )
   }
+  if (useFeedbackToolCallJson && !body.messages?.some((message) => message.role === "tool")) {
+    return new Response(
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: null,
+              tool_calls: [
+                {
+                  id: "call_collect_feedback",
+                  type: "function",
+                  function: {
+                    name: "collect_user_feedback",
+                    arguments: JSON.stringify({
+                      area: "agent",
+                      category: "ux",
+                      originalText: "这个 Agent 交互太绕了，希望简化",
+                      severity: "medium",
+                      summary: "Agent interaction feels too complicated.",
+                    }),
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    )
+  }
+  if (useFeedbackToolCallJson) {
+    return new Response(
+      JSON.stringify({
+        choices: [{ message: { content: "我已记录这条反馈，会继续帮你处理 staking 问题。" } }],
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    )
+  }
   if (useToolCallJson && !body.messages?.some((message) => message.role === "tool")) {
     return new Response(
       JSON.stringify({
@@ -1232,8 +1273,8 @@ try {
     },
   )
   const forgedEligibleAgentJson = await forgedEligibleAgentResponse.json()
-  assert.equal(forgedEligibleAgentJson.source, "fallback")
-  assert.equal(forgedEligibleAgentJson.thinking, "")
+  assert.equal(forgedEligibleAgentResponse.status, 401)
+  assert.equal(forgedEligibleAgentJson.code, "agent_auth_required")
 
   const disabledAuthAgentResponse = await handleAgentApiRequest(
     new Request("http://localhost/api/agent", {
@@ -1444,6 +1485,102 @@ try {
   )
   useRefreshToolCallJson = false
 
+  useFeedbackToolCallJson = true
+  lastAgentBodies = []
+  const feedbackWrites = []
+  const feedbackKv = {
+    async put(key, value) {
+      feedbackWrites.push({ key, value })
+    },
+  }
+  const feedbackAgentResponse = await handleAgentApiRequest(
+    new Request("http://localhost/api/agent", {
+      method: "POST",
+      body: JSON.stringify({
+        message: "这个 Agent 交互太绕了，希望简化",
+        context: agentChatContext,
+      }),
+    }),
+    {
+      VITE_AGENT_AUTH: "false",
+      SAFECAFE_LLM_API_BASE: "https://llm.example",
+      SAFECAFE_LLM_API_MODEL: "test",
+      SAFECAFE_LLM_API_KEY: "secret",
+      SAFECAFE_AGENT_FEEDBACK_KV: feedbackKv,
+    },
+  )
+  const feedbackAgentJson = await feedbackAgentResponse.json()
+  assert.equal(feedbackAgentJson.source, "llm")
+  assert.equal(feedbackAgentJson.tools.length, 2)
+  assert.equal(feedbackAgentJson.tools[1].name, "collect_user_feedback")
+  assert.equal(feedbackAgentJson.tools[1].status, "completed")
+  assert.equal(feedbackAgentJson.tools[1].content, "Feedback recorded.")
+  assert.equal(feedbackWrites.length, 1)
+  assert.equal(feedbackWrites[0].key.startsWith("feedback:"), true)
+  const feedbackRecord = JSON.parse(feedbackWrites[0].value)
+  assert.equal(feedbackRecord.category, "ux")
+  assert.equal(feedbackRecord.area, "agent")
+  assert.equal(feedbackRecord.originalText, "这个 Agent 交互太绕了，希望简化")
+  assert.equal(feedbackRecord.signer.toLowerCase(), mockAccount.toLowerCase())
+  assert.equal(
+    lastAgentBodies[1].messages.some(
+      (message) =>
+        message.role === "tool" &&
+        message.tool_call_id === "call_collect_feedback" &&
+        message.content.includes('"recorded":true'),
+    ),
+    true,
+  )
+  useFeedbackToolCallJson = false
+
+  const directFeedbackWrites = []
+  const directFeedbackResponse = await handleAgentFeedbackRequest(
+    new Request("http://localhost/api/agent/feedback", {
+      method: "POST",
+      body: JSON.stringify({
+        area: "wallet",
+        category: "bug",
+        originalText: "钱包连接提示不清楚",
+        severity: "low",
+        summary: "Wallet connection copy is unclear.",
+      }),
+    }),
+    {
+      SAFECAFE_AGENT_FEEDBACK_KV: {
+        async put(key, value) {
+          directFeedbackWrites.push({ key, value })
+        },
+      },
+    },
+  )
+  const directFeedbackJson = await directFeedbackResponse.json()
+  assert.equal(directFeedbackResponse.status, 200)
+  assert.equal(directFeedbackJson.recorded, true)
+  assert.equal(directFeedbackWrites.length, 1)
+  assert.equal(JSON.parse(directFeedbackWrites[0].value).summary, "Wallet connection copy is unclear.")
+  const fallbackFeedbackResponse = await handleAgentFeedbackRequest(
+    new Request("http://localhost/api/agent/feedback", {
+      method: "POST",
+      body: JSON.stringify({
+        category: "complaint",
+        originalText: "反馈记录也不能影响 Agent 对话",
+        severity: "medium",
+        summary: "Feedback collection should not break Agent chat.",
+      }),
+    }),
+    {
+      SAFECAFE_AGENT_FEEDBACK_KV: {
+        async put() {
+          throw new Error("kv unavailable")
+        },
+      },
+    },
+  )
+  const fallbackFeedbackJson = await fallbackFeedbackResponse.json()
+  assert.equal(fallbackFeedbackResponse.status, 200)
+  assert.equal(fallbackFeedbackJson.recorded, true)
+  assert.equal(fallbackFeedbackJson.storage, "log")
+
   usePrepareToolCallJson = true
   lastAgentBodies = []
   const prepareAgentResponse = await handleAgentApiRequest(
@@ -1635,6 +1772,76 @@ try {
     content: "first chunk second chunk",
     source: "fallback",
   })
+
+  const userLlmFeedbackEvents = []
+  const userLlmFeedbackBodies = []
+  const userLlmFeedbackRequests = []
+  globalThis.fetch = async (url, init) => {
+    if (String(url).endsWith("/api/agent/feedback")) {
+      userLlmFeedbackRequests.push(JSON.parse(String(init?.body ?? "{}")))
+      return new Response(JSON.stringify({ recorded: true, storage: "log" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    }
+    userLlmFeedbackBodies.push(JSON.parse(String(init?.body ?? "{}")))
+    if (userLlmFeedbackBodies.length === 1) {
+      const argumentsJson = JSON.stringify({
+        area: "agent",
+        category: "complaint",
+        originalText: "这个 Agent 交互太绕了",
+        severity: "medium",
+        summary: "Agent interaction is too complicated.",
+      })
+      return new Response(
+        `data: ${JSON.stringify({
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: "call_user_llm_feedback",
+                    type: "function",
+                    function: { name: "collect_user_feedback", arguments: argumentsJson },
+                  },
+                ],
+              },
+            },
+          ],
+        })}\n\ndata: [DONE]\n\n`,
+        { status: 200, headers: { "content-type": "text/event-stream" } },
+      )
+    }
+    return new Response('data: {"choices":[{"delta":{"content":"已记录反馈。"}}]}\n\ndata: [DONE]\n\n', {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    })
+  }
+  await requestAgentReplyStream(
+    {
+      authToken: "session-token",
+      message: "这个 Agent 交互太绕了",
+      messages: [],
+      context: agentChatContext,
+    },
+    (event) => userLlmFeedbackEvents.push(event),
+    undefined,
+    {
+      apiBase: "https://user-llm.example/v1",
+      apiKey: "user-key",
+      maxTokens: 512,
+      model: "user-model",
+    },
+  )
+  assert.equal(userLlmFeedbackRequests.length, 1)
+  assert.equal(userLlmFeedbackRequests[0].category, "complaint")
+  assert.equal(userLlmFeedbackRequests[0].context.account, mockAccount)
+  assert.equal(
+    userLlmFeedbackEvents.some((event) => event.type === "tool" && event.name === "collect_user_feedback"),
+    true,
+  )
+  assert.deepEqual(userLlmFeedbackEvents.at(-1), { type: "final", content: "已记录反馈。", source: "llm" })
   globalThis.fetch = mockFetch
 
   const unauthenticatedRpc = await handleEthereumRpcGatewayRequest(
@@ -2178,6 +2385,57 @@ try {
   assert.equal(safeSession.signer, testAccount.address)
   assert.equal(safeSession.subject, managedSafe)
   assert.equal(safeSession.subjectKind, "safe")
+
+  const safeTxHash = `0x${"66".repeat(32)}`
+  const safeTxUnauthedResponse = await handleSafeTxServiceRequest(
+    new Request("http://localhost/api/safe/transaction", {
+      method: "POST",
+      body: JSON.stringify({
+        action: "get",
+        safeAddress: managedSafe,
+        safeTxHash,
+        senderAddress: testAccount.address,
+      }),
+    }),
+    { SAFECAFE_AUTH_SECRET: "test-secret" },
+  )
+  const safeTxUnauthedJson = await safeTxUnauthedResponse.json()
+  assert.equal(safeTxUnauthedResponse.status, 401)
+  assert.equal(safeTxUnauthedJson.error.code, "safe_tx_auth_required")
+
+  const safeTxMismatchResponse = await handleSafeTxServiceRequest(
+    new Request("http://localhost/api/safe/transaction", {
+      method: "POST",
+      headers: { authorization: `Bearer ${safeSession.token}` },
+      body: JSON.stringify({
+        action: "get",
+        safeAddress: `0x${"55".repeat(20)}`,
+        safeTxHash,
+        senderAddress: testAccount.address,
+      }),
+    }),
+    { SAFECAFE_AUTH_SECRET: "test-secret" },
+  )
+  const safeTxMismatchJson = await safeTxMismatchResponse.json()
+  assert.equal(safeTxMismatchResponse.status, 403)
+  assert.equal(safeTxMismatchJson.error.code, "safe_tx_auth_mismatch")
+
+  const safeTxMissingKeyResponse = await handleSafeTxServiceRequest(
+    new Request("http://localhost/api/safe/transaction", {
+      method: "POST",
+      headers: { authorization: `Bearer ${safeSession.token}` },
+      body: JSON.stringify({
+        action: "get",
+        safeAddress: managedSafe,
+        safeTxHash,
+        senderAddress: testAccount.address,
+      }),
+    }),
+    { SAFECAFE_AUTH_SECRET: "test-secret" },
+  )
+  const safeTxMissingKeyJson = await safeTxMissingKeyResponse.json()
+  assert.equal(safeTxMissingKeyResponse.status, 503)
+  assert.equal(safeTxMissingKeyJson.error.code, "safe_api_key_missing")
 
   const safeSubjectCall = await handleEthereumRpcGatewayRequest(
     new Request("http://localhost/api/rpc/ethereum", {

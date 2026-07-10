@@ -16,8 +16,14 @@ Please report security issues privately to the maintainers before opening a publ
 - Do not commit `.env` files, private keys, mnemonics, API tokens, or wallet exports.
 - Use `.env.example` for public configuration examples.
 - If a private key is exposed, consider it compromised and rotate it immediately.
-- Prefer Safe Transaction Builder payload export for Safe accounts.
-- For CLI EOA sending, prefer `--private-key-prompt` or `--private-key-stdin`; avoid storing signing keys in `.env` or shell history.
+- For Safe accounts, prefer wallet/Safe review flows or the CLI Safe owner flow backed by Safe Transaction Service.
+- For CLI live sending, prefer `--private-key-prompt`, `--private-key-stdin`, or mounted secret files. Avoid storing signing keys in `.env` or shell history unless the environment is controlled CI.
+
+## Agent and API Keys
+
+- Keep `SAFECAFE_LLM_API_KEY`, `SAFECAFE_SAFE_API_KEYS`, and RPC provider credentials server-side.
+- User-provided LLM or Safe API keys are intended to stay in the user's browser storage and should not be committed or shared.
+- The Staking Agent cannot sign or submit transactions by itself. Every on-chain operation must still go through explicit wallet or Safe owner confirmation.
 
 ## Supported Version
 

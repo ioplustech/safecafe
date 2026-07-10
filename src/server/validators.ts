@@ -1,6 +1,8 @@
 import { fetchValidators } from "../protocol"
 import { bigintReplacer } from "../shared"
+import { consumeIpRateLimit, ipRateLimitResponse } from "./ipRateLimit"
 import { createRequestContext, logServerEvent, truncateMessage, withRequestHeaders } from "./serverDiagnostics"
+import type { RpcGatewayEnv } from "./serverEnv"
 
 const validatorMetadataCacheTtlMs = 5 * 60 * 1000
 let validatorMetadataCache: {
@@ -9,7 +11,7 @@ let validatorMetadataCache: {
   expiresAt: number
 } | null = null
 
-export async function handleValidatorsRequest(request: Request): Promise<Response> {
+export async function handleValidatorsRequest(request: Request, env: RpcGatewayEnv = {}): Promise<Response> {
   const context = createRequestContext(request, "/api/validators")
   if (request.method !== "GET") {
     return withRequestHeaders(
@@ -18,6 +20,12 @@ export async function handleValidatorsRequest(request: Request): Promise<Respons
       "method_not_allowed",
     )
   }
+  const ipLimited = consumeIpRateLimit(request, env, context, {
+    bucket: "validators",
+    defaultLimit: 60,
+    limitEnvKey: "SAFECAFE_READ_API_IP_RATE_LIMIT_PER_MINUTE",
+  })
+  if (ipLimited) return ipRateLimitResponse(context, ipLimited)
 
   const cached = validatorMetadataCache && validatorMetadataCache.expiresAt > Date.now() ? validatorMetadataCache : null
   if (cached?.source === "live") {

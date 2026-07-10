@@ -64,6 +64,8 @@ Configure these environment variables before enabling live account reads, authen
 
 - `VITE_RPC_URL` (optional): browser-safe Ethereum RPC endpoint for live wallet reads. If omitted, the app uses bundled public fallback RPC endpoints.
 - `SAFECAFE_RPC_URL` or `SAFECAFE_RPC_URLS`: server-side Ethereum RPC endpoint(s) used by Pages Functions for authenticated RPC, live account data, Safe discovery, and Agent eligibility checks.
+- `SAFECAFE_SAFE_API_KEYS`: server-side Safe Developer API key(s) for Safe Transaction Service operations. Use comma-separated values for multiple keys, for example `key_a,key_b`. The browser never receives this value; web multisig flows call `/api/safe/transaction`.
+- `SAFECAFE_SAFE_TX_SERVICE_URL` (optional): custom server-side Safe Transaction Service base URL. Leave empty to use `https://api.safe.global/tx-service/eth/api`.
 - `SAFECAFE_AUTH_SECRET`: server-side secret used to sign wallet-auth sessions for `/api/rpc/*` and Agent access.
 - `SAFECAFE_RPC_ALLOW_ALL_WALLETS`: set to `false` in production unless you intentionally want signed wallet access without the SAFE/staking eligibility gate.
 - `VITE_AGENT_AUTH`: set to `true` in production so live Agent calls require the signed wallet session.
@@ -71,8 +73,43 @@ Configure these environment variables before enabling live account reads, authen
 - `SAFECAFE_LLM_API_MODEL`: model name for the Staking Agent.
 - `SAFECAFE_LLM_API_KEY`: server-side API key for the Agent proxy.
 - `SAFECAFE_LLM_TIMEOUT_MS` and `SAFECAFE_LLM_MAX_TOKENS` (optional): server-side Agent request bounds.
+- `SAFECAFE_AGENT_DAILY_LIMIT` (optional): daily `/api/agent` quota per signer wallet address. Default: `100`; `0` disables the quota.
+- `SAFECAFE_AGENT_FEEDBACK_DAILY_LIMIT` (optional): daily `/api/agent/feedback` quota per signer or client IP. Default: `20`; `0` disables the quota.
+- `SAFECAFE_API_IP_RATE_LIMIT_PER_MINUTE` (optional): global fallback IP limit for Pages Functions. Default: `120`; `0` disables this fallback.
+- `SAFECAFE_AGENT_IP_RATE_LIMIT_PER_MINUTE` (optional): IP limit for `/api/agent`. Default: `20`; `0` disables it.
+- `SAFECAFE_AGENT_FEEDBACK_IP_RATE_LIMIT_PER_MINUTE` (optional): IP limit for `/api/agent/feedback`. Default: `20`; `0` disables it.
+- `SAFECAFE_AUTH_IP_RATE_LIMIT_PER_MINUTE` (optional): IP limit for `/api/auth/challenge` and `/api/auth/verify`. Default: `30`; `0` disables it.
+- `SAFECAFE_READ_API_IP_RATE_LIMIT_PER_MINUTE` (optional): IP limit for read APIs such as `/api/account/live`, `/api/safes`, `/api/validators`, `/api/rewards/proof`, and `/api/price/safe`. Default: `60`; `0` disables it.
+- `SAFECAFE_RPC_IP_RATE_LIMIT_PER_MINUTE` (optional): IP limit for `/api/rpc/ethereum`. Default: `120`; `0` disables it.
+- `SAFECAFE_SAFE_TX_IP_RATE_LIMIT_PER_MINUTE` (optional): IP limit for `/api/safe/transaction`. Default: `30`; `0` disables it.
 
 `SAFECAFE_LLM_API_KEY` must not be exposed as a `VITE_*` variable. The web app calls the Cloudflare Pages Function at `/api/agent`; the function reads the server-side `SAFECAFE_LLM_*` variables and returns only the Agent response.
+
+The Agent daily quota is intentionally lightweight and in-memory. It is enough for basic abuse control, but counters can reset when Cloudflare starts a new isolate.
+
+For Staking Agent feedback collection, optionally bind a KV namespace named `SAFECAFE_AGENT_FEEDBACK_KV`. Feedback collection is available even before Agent wallet eligibility is unlocked, so users can report blocked or confusing states. If the binding is not configured, feedback is recorded only in structured Pages Function logs. You can also set `SAFECAFE_AGENT_FEEDBACK_DAILY_LIMIT` to cap feedback submissions per signer or client IP.
+
+Cloudflare Workers KV has a Free plan tier that is enough for initial Safecafe feedback collection: Cloudflare currently documents 100,000 reads/day, 1,000 writes/day, and 1 GB stored data on the Free plan. Feedback collection writes one small record per submitted feedback item, so it is safe to start on the free tier and watch usage before considering paid storage.
+
+To deploy the optional feedback KV binding:
+
+1. Create a Workers KV namespace named `SAFECAFE_AGENT_FEEDBACK_KV` in the Cloudflare dashboard, or with Wrangler:
+
+   ```bash
+   pnpm exec wrangler kv namespace create SAFECAFE_AGENT_FEEDBACK_KV
+   ```
+
+2. In the Cloudflare dashboard, open `Workers & Pages` -> `safecafe` -> `Settings` -> `Bindings` -> `Add` -> `KV namespace`.
+3. Set `Variable name` to `SAFECAFE_AGENT_FEEDBACK_KV`, select the namespace created above, and save it for both Production and Preview if needed.
+4. Redeploy the Pages project so the binding is available to `/api/agent` and `/api/agent/feedback`.
+
+`SAFECAFE_SAFE_API_KEYS` must also stay server-side. Configure it in Cloudflare Pages as a secret or encrypted environment variable for each environment that needs Safe multisig proposal sync. With Wrangler, set it with:
+
+```bash
+pnpm exec wrangler pages secret put SAFECAFE_SAFE_API_KEYS --project-name safecafe
+```
+
+If you use the Cloudflare dashboard instead, add it under Pages -> safecafe -> Settings -> Environment variables, and configure Production and Preview separately as needed. Do not create a `VITE_SAFE_API_KEY` variable. Users can optionally add their own Safe API key in the app Settings page; that user key is stored in their browser and bypasses the deployer's server-side key.
 
 Do not set `SAFECAFE_AGENT_TEST_VERIFIED_ACCESS` in production. It is reserved for automated tests that need to bypass the server-side wallet eligibility check.
 
@@ -83,10 +120,12 @@ For production, put `/api/agent` behind Cloudflare abuse controls such as Rate L
 This repo uses Cloudflare Pages Functions from the root [functions](functions) directory for API routes such as:
 
 - `/api/agent`
+- `/api/agent/feedback`
 - `/api/rpc/ethereum`
 - `/api/account/live`
 - `/api/auth/challenge`
 - `/api/auth/verify`
+- `/api/safe/transaction`
 - `/api/safes`
 - `/api/validators`
 - `/api/rewards/proof`

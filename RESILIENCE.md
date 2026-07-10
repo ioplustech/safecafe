@@ -2,10 +2,12 @@
 
 Safecafe targets Track A of the Safenet Beta Staking UI RFP: permissionless, non-custodial staking access with resilient operation and no single proprietary UI dependency.
 
+The frontend is statically distributable and verifiable through IPFS/ENS. Live convenience features can use hosted Pages Functions, but users and operators can also provide their own RPC, Safe Transaction Service API, and LLM API configuration.
+
 ## Goals
 
 - Keep staking, unstaking, withdrawal claiming, and reward claiming available even if one hosted UI is unavailable.
-- Avoid custody, wrapper tokens, account abstraction relayers, or mandatory backend services.
+- Avoid custody, wrapper tokens, account abstraction relayers, or backend-controlled transaction authority.
 - Make every transaction inspectable before signing.
 - Let users choose their own wallet, Safe, RPC endpoint, and distribution channel.
 - Publish enough release metadata for users and reviewers to verify what they are using.
@@ -21,11 +23,11 @@ Safecafe never takes custody of SAFE and does not introduce an intermediary cont
 Supported signing paths:
 
 - Browser wallet signing for normal EOA use.
-- Safe Transaction Builder JSON export for Safe accounts.
-- CLI transaction planning and Safe payload export for repeatable workflows.
-- Optional CLI EOA hot-wallet sending for advanced users, gated by explicit `--send --yes` and private-key source checks.
+- Safe account proposal, confirmation, and execution through Safe Transaction Service.
+- CLI transaction preview and live execution for EOAs or Safe owner accounts.
+- Optional CLI automation for trusted CI, gated by explicit `--send --yes`, signer selection, and private-key source checks.
 
-Safe accounts should use Safe payload export rather than CLI hot-wallet sending. A Safe is a contract account, so an owner EOA sending directly from the CLI would not execute as the Safe.
+For Safe accounts, the signing key must belong to a Safe owner. A `1/1` Safe can execute immediately after signing; an `n/m` Safe is proposed to the Safe Transaction Service, confirmed by available owners, and executed once the threshold is met.
 
 ## Distribution
 
@@ -39,7 +41,7 @@ The web app is a static client-side application. It should be published to multi
 - npm CLI package exposing the `safecafe` binary.
 - Optional Bun-compiled standalone CLI binaries.
 
-This lets users keep operating through the web app, mirrored static hosts, IPFS, Safe payload files, or the CLI.
+This lets users keep operating through the web app, mirrored static hosts, IPFS, Safe wallets, or the CLI.
 
 ## Data Availability
 
@@ -62,8 +64,9 @@ Every write path should expose the same safety contract:
 - Show approval transactions separately from staking transactions.
 - Detect inactive validators and insufficient balances before planning.
 - Detect unclaimable withdrawals and already-claimed rewards before planning.
-- Prevent `--send` from running against Safe contract accounts.
-- Require `--account`, `--send`, and `--yes` before CLI EOA submission.
+- For Safe accounts, require the selected signer to be an owner before proposal or execution.
+- Require `--account`, `--send`, and `--yes` before CLI live submission.
+- Rebuild Agent-generated multi-step actions from fresh live chain state before execution.
 - Reject private keys passed as process arguments.
 
 Future improvements:
@@ -78,10 +81,10 @@ The 95% target should be met by removing single points of failure rather than re
 
 - Static hosting across at least two independent providers.
 - IPFS/ENS distribution for fallback access.
-- No mandatory backend for normal staking operations.
+- Static frontend access remains independently distributable; hosted APIs are convenience layers that can be replaced by user/operator configuration where supported.
 - Multiple RPC fallback endpoints.
 - User-configurable RPC.
-- CLI and Safe payload export as non-web fallback paths.
+- CLI and Safe wallet flows as non-web fallback paths.
 - Release artifacts that can be independently mirrored.
 
 ## Release Verification
@@ -95,7 +98,7 @@ Each public release should include:
 - IPFS CID, if published through Filebase.
 - npm package version and integrity.
 - CLI binary checksums, if binaries are published.
-- Manual smoke-test results for stake planning, unstake planning, withdrawal claim planning, reward proof validation, and Safe payload export.
+- Manual smoke-test results for stake planning, unstake planning, withdrawal claim planning, reward proof validation, Safe multisig execution, and Staking Agent action preparation.
 
 ## Open Questions
 

@@ -2,7 +2,7 @@
 
 **Live:** [safe-staking.eth.limo](https://safe-staking.eth.limo/)
 
-Safecafe is a standalone non-custodial interface for Safenet staking. It includes a web app, CLI, protocol reads, transaction planning, Safe Transaction Builder payload export, and shared utilities in one project.
+Safecafe is a standalone non-custodial interface for Safenet staking. It includes a web app, CLI, protocol reads, transaction planning, Safe multisig execution support, and shared utilities in one project.
 
 Safecafe never takes custody of funds. Users review and sign transactions from their own wallet or Safe.
 
@@ -12,11 +12,12 @@ Safecafe never takes custody of funds. Users review and sign transactions from t
 - Validator discovery, filtering, and stake distribution views
 - Stake, unstake, withdrawal claim, and reward claim transaction planning
 - Reward proof loading and Merkle root comparison
-- Safe Transaction Builder JSON export
-- Scriptable CLI for protocol status, validators, staking, withdrawals, rewards, and contract addresses
-- CLI transaction planning, Safe payload export, and explicit EOA hot-wallet sending
-- English and Chinese UI copy
-- Static frontend deployment with no proprietary backend requirement
+- Staking Agent for natural-language SAFE staking workflows
+- Safe multisig proposal, confirmation, and execution support through Safe Transaction Service
+- Scriptable CLI for protocol status, validators, staking, withdrawals, rewards, Agent workflows, and contract addresses
+- CLI transaction preview and explicit live sending for EOAs or Safe owner accounts
+- English, Chinese, German, and Korean UI copy
+- Static frontend distribution with optional user-configurable RPC, Safe API, and LLM API paths
 
 ## Structure
 
@@ -68,6 +69,20 @@ The built-in RPC gateway (`/api/rpc/ethereum`) supports wallet-based session aut
 | `SAFECAFE_AUTH_SECRET` | HMAC-SHA256 key for signing and verifying session tokens. **Required in production.** A fixed fallback is used automatically on `localhost`. |
 | `SAFECAFE_RPC_ALLOW_ALL_WALLETS` | Access policy for the RPC gateway. `false` (default) = only wallets holding SAFE tokens or staking positions can connect. `true` = any wallet that signs a challenge can connect. |
 
+### Server IP Rate Limits
+
+All built-in API limits are lightweight in-memory counters per client IP. They are intended as a first abuse-control layer for Cloudflare Pages Functions; counters may reset when a local server or Cloudflare isolate restarts. Set any value to `0` to disable that specific limit.
+
+| Variable | Default | Applies to |
+| --- | ---: | --- |
+| `SAFECAFE_API_IP_RATE_LIMIT_PER_MINUTE` | `120` | Global fallback for routes without a more specific limit. |
+| `SAFECAFE_AGENT_IP_RATE_LIMIT_PER_MINUTE` | `20` | `/api/agent` |
+| `SAFECAFE_AGENT_FEEDBACK_IP_RATE_LIMIT_PER_MINUTE` | `20` | `/api/agent/feedback` |
+| `SAFECAFE_AUTH_IP_RATE_LIMIT_PER_MINUTE` | `30` | `/api/auth/challenge`, `/api/auth/verify` |
+| `SAFECAFE_READ_API_IP_RATE_LIMIT_PER_MINUTE` | `60` | `/api/account/live`, `/api/safes`, `/api/validators`, `/api/rewards/proof`, `/api/price/safe` |
+| `SAFECAFE_RPC_IP_RATE_LIMIT_PER_MINUTE` | `120` | `/api/rpc/ethereum` |
+| `SAFECAFE_SAFE_TX_IP_RATE_LIMIT_PER_MINUTE` | `30` | `/api/safe/transaction` |
+
 ### Staking Agent (LLM)
 
 The Staking Agent (`/api/agent`) uses an OpenAI-compatible LLM upstream for AI-powered staking guidance.
@@ -80,6 +95,23 @@ The Staking Agent (`/api/agent`) uses an OpenAI-compatible LLM upstream for AI-p
 | `SAFECAFE_LLM_TIMEOUT_MS` | Request timeout in milliseconds. Default: `30000`. |
 | `SAFECAFE_LLM_MAX_TOKENS` | Max response tokens per LLM call. Default: `512`. |
 | `SAFECAFE_LLM_HEADER` | Optional identifier sent as `X-Service-Id` header to the upstream LLM for usage tracking. Leave empty to omit. |
+| `SAFECAFE_AGENT_DAILY_LIMIT` | Daily `/api/agent` quota per signer wallet address, counted after wallet access is eligible. Default: `100`; set `0` to disable. |
+| `SAFECAFE_AGENT_FEEDBACK_DAILY_LIMIT` | Optional daily `/api/agent/feedback` quota per signer or client IP. Default: `20`; set `0` to disable. |
+
+The Agent quota is intentionally lightweight and in-memory. It is enough for basic abuse control, but counters can reset when a local server or Cloudflare isolate restarts.
+
+The Staking Agent can also collect user feedback when users report bugs, complain about UX, or suggest improvements. Bind an optional KV namespace named `SAFECAFE_AGENT_FEEDBACK_KV` to store feedback records. Without this binding, feedback is written to structured server logs only.
+
+### Safe Transaction Service
+
+Used for Safe multisig proposal and confirmation management. Keep these values server-side or CLI-only; do not expose deployer Safe API keys as `VITE_*` browser variables.
+
+The web app calls `/api/safe/transaction` for deployer-managed Safe Transaction Service access. Users who do not want to rely on the deployer's key can add their own Safe API key in Settings; that key is stored only in their browser local storage and used directly from the browser.
+
+| Variable | Description |
+| --- | --- |
+| `SAFECAFE_SAFE_API_KEYS` | Server-side Safe Developer API keys for the Transaction Service. Supports multiple keys separated by commas, e.g. `key_a,key_b`. The server proxy will try the configured keys without exposing them to the browser; the CLI uses the first non-empty key. |
+| `SAFECAFE_SAFE_TX_SERVICE_URL` | Optional custom server-side Safe Transaction Service base URL. Leave empty to use `https://api.safe.global/tx-service/eth/api`. |
 
 ### Filebase / IPFS
 
@@ -125,7 +157,7 @@ pnpm cli:packed status --mock
 
 After building, the package exposes the `safecafe` binary from `cli/dist/index.js`.
 
-The CLI is safest as a read-only planning and Safe Transaction Builder export tool. Advanced EOA users can submit transactions with `--send --private-key-prompt --yes` or pipe a key with `--private-key-stdin`; raw private keys are never accepted as command-line arguments.
+The CLI can preview actions, execute from an EOA, or manage a Safe directly with an owner key. Live execution is always explicit: use `--send --yes` plus a hidden/private-key source such as `--private-key-prompt`, `--private-key-stdin`, or a configured environment/file secret. Raw private keys are never accepted as command-line arguments.
 
 ## Testing
 
@@ -139,7 +171,7 @@ Safecafe builds to a static frontend:
 pnpm build:web
 ```
 
-The output in `dist/` can be deployed to Cloudflare Pages, IPFS-style static hosting, or any static host that supports SPA fallback routing.
+The output in `dist/` can be deployed to Cloudflare Pages, IPFS-style static hosting, or any static host that supports SPA fallback routing. Full server-side features under `/api/*` require Cloudflare Pages Functions; pure static hosts or the included Vercel SPA rewrite only serve the frontend shell.
 
 Cloudflare Pages is the recommended primary public host. Filebase/IPFS is used for immutable release snapshots, and `safe-staking.eth` is configured to resolve through `https://safe-staking.eth.limo/` after its ENS contenthash points to the current `ipfs://<CID>`. See [CLOUDFLARE.md](CLOUDFLARE.md) for the full development, Cloudflare deployment, IPFS publishing, ENS update, and verification flow.
 
@@ -155,14 +187,14 @@ Cloudflare Pages is the recommended primary public host. Filebase/IPFS is used f
 
 ## Resilience
 
-Safecafe is designed for Track A: permissionless, non-custodial access with no proprietary backend requirement. See [RESILIENCE.md](RESILIENCE.md) for the decentralization, uptime, signing, data-source, and release-verification model.
+Safecafe is designed for Track A: permissionless, non-custodial access with verifiable static releases and user-configurable data/service endpoints. See [RESILIENCE.md](RESILIENCE.md) for the decentralization, uptime, signing, data-source, and release-verification model.
 
 ## Security
 
 - Safecafe is non-custodial and prepares transactions for user review and signing.
 - Keep `.env` files local. `.env.example` is the only environment file intended for git.
 - Treat any exposed private key as compromised and replace it immediately.
-- Prefer Safe payload export or hidden/private stdin signing over environment variables.
+- Prefer wallet/Safe review flows or hidden/private stdin signing over long-lived environment secrets.
 - Report security issues privately before opening public issues.
 
 ## License

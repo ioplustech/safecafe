@@ -1,6 +1,7 @@
 import { type Address, createPublicClient, fallback, getAddress, http, isAddress, type PublicClient } from "viem"
 import { safeAccountAbi } from "../protocol/abi"
 import { ethereumMainnet } from "../protocol/chains"
+import { consumeIpRateLimit, ipRateLimitResponse } from "./ipRateLimit"
 import { rpcUrls } from "./rpcUpstream"
 import { createRequestContext, logServerEvent, truncateMessage, withRequestHeaders } from "./serverDiagnostics"
 import type { RpcGatewayEnv } from "./serverEnv"
@@ -25,6 +26,12 @@ export async function handleSafeDiscoveryRequest(request: Request, env: RpcGatew
       context,
     )
   }
+  const ipLimited = consumeIpRateLimit(request, env, context, {
+    bucket: "safes",
+    defaultLimit: 60,
+    limitEnvKey: "SAFECAFE_READ_API_IP_RATE_LIMIT_PER_MINUTE",
+  })
+  if (ipLimited) return ipRateLimitResponse(context, ipLimited)
   const url = new URL(request.url)
   const owner = url.searchParams.get("owner")
   const safe = url.searchParams.get("safe")

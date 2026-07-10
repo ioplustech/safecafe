@@ -8,6 +8,7 @@ import {
   readValidatorPositions,
 } from "../protocol"
 import { bigintReplacer } from "../shared"
+import { consumeIpRateLimit, ipRateLimitResponse } from "./ipRateLimit"
 import { readRewardProof } from "./rewardsProof"
 import { rpcUrls } from "./rpcUpstream"
 import { createRequestContext, logServerEvent, truncateMessage, withRequestHeaders } from "./serverDiagnostics"
@@ -22,6 +23,12 @@ export async function handleAccountLiveRequest(request: Request, env: RpcGateway
   const context = createRequestContext(request, "account.live")
   if (request.method !== "GET")
     return json({ code: "method_not_allowed", error: "Method not allowed", requestId: context.requestId }, 405, context)
+  const ipLimited = consumeIpRateLimit(request, env, context, {
+    bucket: "account.live",
+    defaultLimit: 60,
+    limitEnvKey: "SAFECAFE_READ_API_IP_RATE_LIMIT_PER_MINUTE",
+  })
+  if (ipLimited) return ipRateLimitResponse(context, ipLimited)
   const url = new URL(request.url)
   const account = url.searchParams.get("account")
   if (!account || !isAddress(account)) {

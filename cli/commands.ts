@@ -18,6 +18,7 @@ import {
 } from "../src/protocol"
 import { output } from "../src/shared/cli"
 import { parseAddress, totalAmount } from "../src/shared/utils"
+import { runAgentCommand } from "./agent"
 import {
   assertRewardsClaimable,
   assertStakePossible,
@@ -89,7 +90,7 @@ export function registerCommands(program: Command) {
         .sort((a, b) => {
           if (options.sort === "name") return a.label.localeCompare(b.label)
           if (options.sort === "commission") return a.commission - b.commission
-          if (options.sort === "stake") return Number(b.totalStake - a.totalStake)
+          if (options.sort === "stake") return b.totalStake === a.totalStake ? 0 : b.totalStake > a.totalStake ? 1 : -1
           return b.participationRate - a.participationRate
         })
 
@@ -109,13 +110,13 @@ export function registerCommands(program: Command) {
 
   program
     .command("stake")
-    .description("Plan, export, or send a stake transaction")
+    .description("Preview or execute a stake transaction")
     .requiredOption("--validator <address-or-name>", "Validator address or known label")
     .requiredOption("--amount <safe>", "SAFE amount")
     .option("--account <address>", "Account used for planning")
     .option("--dry-run", "Only print the transaction plan", true)
-    .option("--safe-payload <path>", "Write a Safe Transaction Builder JSON payload")
-    .option("--send", "Submit the planned transactions from a local EOA hot wallet")
+    .option("--send", "Execute the planned transactions with an EOA or Safe owner key")
+    .option("--signer <address>", "Choose which local signer address should submit or confirm the transaction")
     .option("--private-key-prompt", "Prompt for the private key with hidden terminal input")
     .option("--private-key-stdin", "Read the private key from stdin")
     .option("--private-key-env <name>", "Read the private key from an environment variable")
@@ -132,20 +133,20 @@ export function registerCommands(program: Command) {
 
   program
     .command("unstake")
-    .description("Plan, export, or send an unstake transaction")
+    .description("Preview or execute an unstake transaction")
     .requiredOption("--validator <address-or-name>", "Validator address or known label")
     .requiredOption("--amount <safe>", "SAFE amount")
     .option("--account <address>", "Account used for planning")
     .option("--dry-run", "Only print the transaction plan", true)
-    .option("--safe-payload <path>", "Write a Safe Transaction Builder JSON payload")
-    .option("--send", "Submit the planned transactions from a local EOA hot wallet")
+    .option("--send", "Execute the planned transactions with an EOA or Safe owner key")
+    .option("--signer <address>", "Choose which local signer address should submit or confirm the transaction")
     .option("--private-key-prompt", "Prompt for the private key with hidden terminal input")
     .option("--private-key-stdin", "Read the private key from stdin")
     .option("--private-key-env <name>", "Read the private key from an environment variable")
     .option("--yes", "Confirm live transaction submission")
     .action(async (options: WriteOptions & { validator: string; amount: string }) => {
       const globals = program.opts<GlobalOptions>()
-      const validator = await resolveValidator(options.validator, globals.mock)
+      const validator = await resolveValidator(options.validator, globals.mock, { allowDirectAddress: true })
       const account = resolvePlanningAccount(options, globals)
       if (!globals.mock && account) await assertUnstakePossible(globals, account, validator, options.amount)
       await handlePlan(globals, planUnstake({ validator, amount: options.amount, account }), options)
@@ -182,11 +183,11 @@ export function registerCommands(program: Command) {
 
   program
     .command("claim-withdrawal")
-    .description("Plan, export, or send a withdrawal claim")
+    .description("Preview or execute a withdrawal claim")
     .option("--account <address>", "Account used for planning")
     .option("--dry-run", "Only print the transaction plan", true)
-    .option("--safe-payload <path>", "Write a Safe Transaction Builder JSON payload")
-    .option("--send", "Submit the planned transactions from a local EOA hot wallet")
+    .option("--send", "Execute the planned transactions with an EOA or Safe owner key")
+    .option("--signer <address>", "Choose which local signer address should submit or confirm the transaction")
     .option("--private-key-prompt", "Prompt for the private key with hidden terminal input")
     .option("--private-key-stdin", "Read the private key from stdin")
     .option("--private-key-env <name>", "Read the private key from an environment variable")
@@ -233,11 +234,11 @@ export function registerCommands(program: Command) {
 
   program
     .command("claim-rewards")
-    .description("Plan, export, or send a reward claim")
+    .description("Preview or execute a reward claim")
     .requiredOption("--account <address>", "Reward account")
     .option("--dry-run", "Only print the transaction plan", true)
-    .option("--safe-payload <path>", "Write a Safe Transaction Builder JSON payload")
-    .option("--send", "Submit the planned transactions from a local EOA hot wallet")
+    .option("--send", "Execute the planned transactions with an EOA or Safe owner key")
+    .option("--signer <address>", "Choose which local signer address should submit or confirm the transaction")
     .option("--private-key-prompt", "Prompt for the private key with hidden terminal input")
     .option("--private-key-stdin", "Read the private key from stdin")
     .option("--private-key-env <name>", "Read the private key from an environment variable")
@@ -298,15 +299,37 @@ export function registerCommands(program: Command) {
       console.log("2. Pick a validator")
       console.log("   safecafe validators --active --sort participation")
       console.log("")
-      console.log("3. Prepare a stake")
+      console.log("3. Preview a stake")
       console.log('   safecafe stake --account 0xYourSafe --validator "Core Contributors" --amount 100 --dry-run')
       console.log("")
-      console.log("4. Export a Safe payload")
-      console.log(
-        '   safecafe stake --account 0xYourSafe --validator "Core Contributors" --amount 100 --safe-payload ./safecafe-safe.json',
-      )
+      console.log("4. Execute it directly")
+      console.log('   safecafe stake --account 0xYourSafe --validator "Core Contributors" --amount 100 --send --yes')
       console.log("")
       console.log("5. Collect rewards when proof is available")
       console.log("   safecafe rewards --account 0xYourSafe")
     })
+
+  program
+    .command("agent")
+    .description("Use the staking agent in one-shot or REPL mode")
+    .option("-p, --prompt <text>", "One-shot natural-language prompt")
+    .option("-r, --resume", "Resume the last saved Agent action and execute it if possible")
+    .option("--refresh", "Rebuild the saved Agent action from live state without executing")
+    .option("--cancel", "Clear the saved Agent workflow state")
+    .option("--account <address>", "EOA or Safe staking account")
+    .option("--send", "Execute the prepared action when the prompt is actionable")
+    .option("--signer <address>", "Choose which local signer address should submit or confirm the transaction")
+    .option("--private-key-prompt", "Prompt for the private key with hidden terminal input")
+    .option("--private-key-stdin", "Read the private key from stdin")
+    .option("--private-key-env <name>", "Read the private key from an environment variable")
+    .option("--yes", "Confirm live transaction submission")
+    .action(
+      async (options: WriteOptions & { cancel?: boolean; prompt?: string; refresh?: boolean; resume?: boolean }) => {
+        const globals = program.opts<GlobalOptions>()
+        await runAgentCommand(globals, {
+          ...options,
+          continueRun: options.resume,
+        })
+      },
+    )
 }

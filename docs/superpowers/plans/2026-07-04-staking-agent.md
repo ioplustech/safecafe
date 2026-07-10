@@ -1,8 +1,8 @@
 # Staking Agent Implementation Plan
 
-> **For agentic workers:** This is the implementation record for the Staking Agent. Prefer direct local verification for follow-up changes; subagents are optional and should not block cleanup, review, or fixes. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** This is a historical implementation record for the Staking Agent. Prefer current source code, `README.md`, `cli/README.md`, `TESTING.md`, and `RESILIENCE.md` for product behavior. Older mentions of Safe payload export have been superseded by direct wallet confirmation and Safe Transaction Service proposal/confirmation/execution flows.
 
-**Goal:** Build a non-custodial Staking Agent that turns bounded natural-language staking instructions into validated, reviewable multi-step transaction plans that the user must explicitly sign with their wallet or export as a Safe payload.
+**Goal:** Build a non-custodial Staking Agent that turns bounded natural-language staking instructions into validated, reviewable multi-step transaction plans that the user must explicitly confirm with their wallet or Safe owner flow.
 
 **Architecture:** The Agent is a deterministic planning layer over existing Safecafe wallet state, live reads, validator metadata, reward proofs, and `TxPlan` builders. Natural language is parsed into a constrained `AgentIntent` JSON shape, compiled into an `AgentPlan` made of existing protocol `TxPlan` primitives, simulated and risk-checked, then shown for explicit user review before any wallet request. No model or parser is allowed to generate calldata directly.
 
@@ -13,7 +13,7 @@
 - Language: UI copy must support English and Chinese through `src/app/i18n.ts`.
 - Package manager: use `pnpm` only.
 - Formatting/linting: keep Biome passing through `pnpm check`.
-- Security: never auto-submit transactions; every on-chain transaction requires user wallet confirmation or Safe payload export.
+- Security: never auto-submit transactions; every on-chain transaction requires explicit wallet confirmation or Safe owner confirmation/execution.
 - Non-custodial model: never request, store, transmit, or infer private keys in the web app.
 - Agent safety: natural language can choose among supported intents only; calldata must be produced exclusively by existing audited plan builders in `src/protocol/txPlan.ts` or new typed builders reviewed in this plan.
 - Network scope: Ethereum mainnet only, using existing `CHAIN_ID` and `ensureMainnet()` behavior.
@@ -120,8 +120,7 @@ export type AgentValidatorRef =
    - “This is not automatic. Your wallet will ask you to confirm each transaction.”
 12. User chooses one of:
    - “Apply to manual workflow” to populate existing single-action UI.
-   - “Submit transactions” for wallet confirmation, using existing `submitPlan`-style logic.
-   - “Export Safe payload.”
+   - “Submit transactions” for wallet confirmation or Safe owner confirmation, using existing execution logic.
    - “Edit instruction.”
 13. After execution, Agent refreshes live reads and marks completed steps in the chat history. It does not schedule future actions automatically.
 
@@ -154,13 +153,13 @@ Hard rules:
 - Agent cannot stake more than `safeBalance` unless the source is claimable rewards in a reviewed claim-then-stake sequence.
 - Agent cannot use “best” validator without showing deterministic ranking criteria.
 - Agent cannot obscure wallet prompts or transaction review surfaces. The chat dialog must close or shrink before a wallet confirmation request if it would overlap the wallet UI.
-- Agent cannot treat a drag/drop movement as approval. Only explicit CTA buttons in the review card can apply, export, or submit a plan.
+- Agent cannot treat a drag/drop movement as approval. Only explicit CTA buttons in the review card can apply or submit a plan.
 
 Risk controls:
 
 - Add an `AgentRisk` model with severity `info | warning | blocked`.
-- Plans with any `blocked` risk cannot be submitted or exported.
-- Plans with warnings require explicit checkbox acknowledgement before submit/export.
+- Plans with any `blocked` risk cannot be submitted.
+- Plans with warnings require explicit checkbox acknowledgement before submit.
 - Any multi-transaction plan shows transaction count and order before wallet prompt.
 - Any plan containing ERC20 approval highlights exact approval amount and spender.
 
@@ -187,7 +186,7 @@ State boundaries:
 - No claimable withdrawal -> claim withdrawal blocked.
 - Pending but not claimable withdrawal -> explain next claimable timestamp.
 - Stake intent requires approval -> plan includes exact approve tx first.
-- Wallet does not support sequential transactions well -> Safe export remains available.
+- Wallet does not support sequential transactions well -> use the Safe owner flow where applicable.
 - Account changes after draft -> invalidate plan.
 - `amount=max` with balance changing after approval/claim -> require refresh and rebuild.
 
@@ -197,7 +196,7 @@ Execution boundaries:
 - First tx succeeds and second fails -> refresh live reads, mark partial completion, require rebuild before retry.
 - Approval succeeds but stake rejected -> show remaining next step and require rebuild.
 - Transaction receipt timeout -> show pending hash, refresh reads when possible.
-- Safe payload export for multi-phase delayed rebalance -> export only executable current phase; include note for future phase.
+- Safe multisig execution for multi-phase delayed rebalance -> execute only the current claimable phase; include note for future phase.
 
 ## 2. Technical方案
 
@@ -232,7 +231,7 @@ Modify existing files:
 - `src/app/App.tsx`
   - Build `AgentContext` from existing `account`, `liveSnapshot`, `validators`, `summary`, `rewardProof`, `liveMerkleRoot`, `chainId`, `liveBlock`.
   - Mount `<AgentLauncher />` once at the app shell level so it is available from every route.
-  - Reuse `simulateTxPlan`, `submitPlan`, `exportSafePayload`, and wallet connect through explicit callbacks passed into the chat dialog.
+  - Reuse simulation, transaction submission, Safe owner execution, and wallet connect through explicit callbacks passed into the chat dialog.
 - `src/app/i18n.ts`
   - Add Agent UI copy in English and Chinese.
 - `src/styles.css`
@@ -355,7 +354,7 @@ Existing reusable pieces:
 - Plan builders: `planStake`, `planUnstake`, `planClaimWithdrawal`, `planClaimRewards`.
 - Simulation: existing `simulateTxPlan` in `App.tsx`.
 - Submission: existing `submitPlan` in `App.tsx` after setting `txPlan`.
-- Export: existing `exportSafePayload`.
+- Safe execution: existing wallet/Safe owner execution path.
 - Validator UI/copy: `ValidatorInfo`, `formatSafe`, `compactAddress`, `TxPlanPanel` patterns.
 
 Needed extraction before clean Agent UI:
@@ -405,7 +404,7 @@ Phase B: UI draft flow.
 Phase C: Execution integration.
 
 - Combine executable now phases into a `TxPlan`.
-- Reuse simulation/submission/export.
+- Reuse simulation/submission/Safe execution.
 - Add warning acknowledgement.
 
 Phase D: Optional external LLM adapter.
@@ -1177,15 +1176,15 @@ Without explicit commit approval, run `git diff --stat` and report the changed s
 
 **Interfaces:**
 - Consumes: `flattenExecutableTxPlan`.
-- Produces: review/export/submit path for executable agent plans through existing wallet confirmation.
+- Produces: review/submit path for executable agent plans through existing wallet or Safe owner confirmation.
 
 - [ ] **Step 1: Add warning acknowledgement state**
 
 Agent chat review card must require explicit checkbox when `plan.risks` has warning or any child tx warnings exist. The checkbox lives inside the plan card, not in a modal.
 
-- [ ] **Step 2: Add Safe export button**
+- [ ] **Step 2: Add Safe owner execution path**
 
-Use existing `toSafeTransactionPayload` through an App-level callback, not direct duplicate export logic. The dialog passes the executable flattened plan to the callback.
+Use the existing Safe owner execution path through an App-level callback, not duplicate transaction construction logic. The dialog passes the executable flattened plan to the callback.
 
 - [ ] **Step 3: Add submit button**
 
@@ -1202,7 +1201,7 @@ Before opening wallet confirmation, minimize the chat dialog if it overlaps the 
 
 - [ ] **Step 4: Invalidate plan on account/chain/live block changes**
 
-If `account`, `chainId`, or `liveBlock` changes after draft, show “Refresh and rebuild required” and disable submit/export. The chat history can remain visible, but the old plan card must be visibly stale.
+If `account`, `chainId`, or `liveBlock` changes after draft, show “Refresh and rebuild required” and disable submit. The chat history can remain visible, but the old plan card must be visibly stale.
 
 - [ ] **Step 5: Run tests**
 
@@ -1224,7 +1223,7 @@ Without explicit commit approval, run `git diff --stat` and report the changed s
 Spec coverage:
 
 - Functional design covered: capability boundary, operation types, user flow, permissions, security model, boundary cases.
-- Technical design covered: module map, interfaces, integration with existing wallet/live reads/TxPlan/Safe payload flow.
+- Technical design covered: module map, interfaces, integration with existing wallet/live reads/TxPlan/Safe execution flow.
 - Implementation covered: six tasks with tests and commits.
 - User's latest interaction request covered: global customer-support-style launcher, draggable entry point, chat dialog, guided prompt chips, and wallet-confirmation handoff.
 - Safety requirement covered: no auto execution, wallet confirmation required, no calldata generation by Agent/parser/model.

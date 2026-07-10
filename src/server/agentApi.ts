@@ -9,7 +9,9 @@ import {
 } from "../agent/upstreamProtocol"
 import { resolveAgentAuthRequired } from "../shared/agentAuth"
 import { verifyRpcAccess } from "./accessStrategy"
+import { type AgentFeedbackEnv, collectAgentFeedback } from "./agentFeedback"
 import { readRpcSession } from "./authSession"
+import { consumeIpRateLimit } from "./ipRateLimit"
 import {
   createRequestContext,
   logServerEvent,
@@ -28,6 +30,9 @@ type AgentApiEnv = RpcGatewayEnv & {
   SAFECAFE_LLM_TIMEOUT_MS?: string
   SAFECAFE_LLM_MAX_TOKENS?: string
   SAFECAFE_LLM_HEADER?: string
+  SAFECAFE_AGENT_DAILY_LIMIT?: string
+  SAFECAFE_AGENT_FEEDBACK_DAILY_LIMIT?: string
+  SAFECAFE_AGENT_FEEDBACK_KV?: AgentFeedbackEnv["SAFECAFE_AGENT_FEEDBACK_KV"]
   VITE_AGENT_AUTH?: string
 }
 
@@ -125,16 +130,30 @@ const maxHistoryMessageChars = 2_000
 const maxSummaryChars = 1_200
 const defaultUpstreamTimeoutMs = 30_000
 const defaultUpstreamMaxTokens = 512
-const rateLimitWindowMs = 60_000
-const maxRequestsPerWindow = 20
-const rateLimitBuckets = new Map<string, { count: number; resetAt: number }>()
+const defaultAgentDailyLimit = 100
+const dailyLimitBuckets = new Map<string, { count: number; resetAt: number }>()
 
 export async function handleAgentApiRequest(request: Request, env: AgentApiEnv): Promise<Response> {
   const context = createRequestContext(request, "agent")
   if (request.method !== "POST") return json({ error: "Method not allowed" }, 405, context, "method_not_allowed")
-  if (isRateLimited(request)) {
-    logServerEvent(context, "warn", "agent.rate_limited")
-    return json({ error: "Too many Agent requests. Please slow down." }, 429, context, "rate_limited")
+  const ipLimited = consumeIpRateLimit(request, env, context, {
+    bucket: "agent",
+    defaultLimit: 20,
+    limitEnvKey: "SAFECAFE_AGENT_IP_RATE_LIMIT_PER_MINUTE",
+  })
+  if (ipLimited) {
+    return json(
+      {
+        code: ipLimited.code,
+        error: "Too many Agent requests from this IP. Please slow down.",
+        limit: ipLimited.limit,
+        resetAt: new Date(ipLimited.resetAt).toISOString(),
+      },
+      429,
+      context,
+      ipLimited.code,
+      ipLimited.headers,
+    )
   }
 
   const parsed = await readAgentRequest(request)
@@ -144,11 +163,12 @@ export async function handleAgentApiRequest(request: Request, env: AgentApiEnv):
   }
 
   const access = await verifyAgentAccess(request, parsed.value, env)
-  const fallback = lockedOrFallbackReply(access)
-  if (fallback) {
+  if (access.status !== "eligible") {
     logServerEvent(context, "warn", "agent.access.locked", { reason: access.reason })
-    return agentResponse(parsed.value, fallback.content, fallback.source, fallback.thinking, context)
+    return json({ code: access.code, error: access.reason }, access.httpStatus, context, access.code)
   }
+  const dailyLimit = await enforceAgentDailyLimit(access.address, env, context)
+  if (dailyLimit) return dailyLimit
 
   const base = env.SAFECAFE_LLM_API_BASE
   const model = env.SAFECAFE_LLM_API_MODEL
@@ -175,6 +195,7 @@ export async function handleAgentApiRequest(request: Request, env: AgentApiEnv):
       apiKey,
       base,
       context,
+      env,
       maxTokens,
       model,
       request: parsed.value,
@@ -186,6 +207,7 @@ export async function handleAgentApiRequest(request: Request, env: AgentApiEnv):
     apiKey,
     base,
     context,
+    env,
     maxTokens,
     model,
     request: parsed.value,
@@ -229,62 +251,146 @@ async function verifyAgentAccess(
   httpRequest: Request,
   request: SanitizedRequest,
   env: AgentApiEnv,
-): Promise<{ status: "eligible" | "locked"; reason: string }> {
+): Promise<
+  | { status: "eligible"; address: Address; reason: string }
+  | { status: "locked"; code: string; httpStatus: number; reason: string }
+> {
   if (env.SAFECAFE_AGENT_TEST_VERIFIED_ACCESS === "true") {
-    return { status: "eligible", reason: "Test-only server-side eligibility override passed." }
+    const address =
+      request.context.account && isAddress(request.context.account) ? getAddress(request.context.account) : null
+    return address
+      ? { status: "eligible", address, reason: "Test-only server-side eligibility override passed." }
+      : lockedAgentAccess("No valid wallet address was provided for test access.")
   }
   if (!resolveAgentAuthRequired(env.VITE_AGENT_AUTH)) {
-    return { status: "eligible", reason: "Agent auth is disabled by configuration." }
+    const address =
+      request.context.account && isAddress(request.context.account) ? getAddress(request.context.account) : null
+    return address
+      ? { status: "eligible", address, reason: "Agent auth is disabled by configuration." }
+      : lockedAgentAccess("No valid wallet address was provided for Agent access.")
   }
   if (!request.context.account || !isAddress(request.context.account)) {
-    return {
-      status: "locked",
-      reason: "No valid wallet address was provided for server-side eligibility verification.",
-    }
+    return lockedAgentAccess("No valid wallet address was provided for server-side eligibility verification.")
   }
   if (!request.context.subjectAccount || !isAddress(request.context.subjectAccount)) {
-    return {
-      status: "locked",
-      reason: "No valid staking subject address was provided for server-side eligibility verification.",
-    }
+    return lockedAgentAccess(
+      "No valid staking subject address was provided for server-side eligibility verification.",
+      400,
+      "agent_invalid_context",
+    )
   }
   try {
     const signer = getAddress(request.context.account)
     const subject = getAddress(request.context.subjectAccount)
     const session = await readRpcSession(httpRequest, env)
     if (!session) {
-      return { status: "locked", reason: "Authenticated wallet session is required for live Agent access." }
+      return lockedAgentAccess("Authenticated wallet session is required for live Agent access.")
     }
     if (
       session.signer.toLowerCase() !== signer.toLowerCase() ||
       session.subject.toLowerCase() !== subject.toLowerCase()
     ) {
-      return { status: "locked", reason: "Authenticated wallet session does not match the requested staking account." }
+      return lockedAgentAccess(
+        "Authenticated wallet session does not match the requested staking account.",
+        403,
+        "agent_auth_mismatch",
+      )
     }
     return (await verifyRpcAccess({ signer, subject }, env))
-      ? { status: "eligible", reason: "Server-side Agent access strategy check passed." }
-      : { status: "locked", reason: "Requested wallet does not satisfy the configured Agent access strategy." }
+      ? { status: "eligible", address: signer, reason: "Server-side Agent access strategy check passed." }
+      : lockedAgentAccess(
+          "Requested wallet does not satisfy the configured Agent access strategy.",
+          403,
+          "agent_access_denied",
+        )
   } catch {
-    return { status: "locked", reason: "Server-side eligibility check failed." }
+    return lockedAgentAccess("Server-side eligibility check failed.", 503, "agent_access_check_failed")
   }
 }
 
-function lockedOrFallbackReply(access: {
-  status: "eligible" | "locked"
-  reason: string
-}): { content: string; source: "fallback"; thinking?: string } | null {
-  if (access.status === "eligible") return null
+function lockedAgentAccess(reason: string, httpStatus = 401, code = "agent_auth_required") {
   return {
-    content:
-      "Connect a wallet with SAFE or an existing SAFE staking position to unlock live Agent guidance. Until then, I can show supported examples locally.",
-    source: "fallback",
+    code,
+    httpStatus,
+    reason,
+    status: "locked" as const,
   }
+}
+
+async function enforceAgentDailyLimit(
+  address: Address,
+  env: AgentApiEnv,
+  context: RequestContext,
+): Promise<Response | null> {
+  const limit = readBoundedInteger(env.SAFECAFE_AGENT_DAILY_LIMIT, defaultAgentDailyLimit, 0, 100_000)
+  if (limit <= 0) return null
+  const now = Date.now()
+  const resetAt = nextUtcDayStartMs(now)
+  const key = `agent:${utcDateKey(now)}:${address.toLowerCase()}`
+  const result = consumeDailyLimitFromMemory(key, limit, resetAt)
+  if (result.allowed) {
+    logServerEvent(context, "info", "agent.daily_limit.allowed", {
+      address,
+      limit,
+      remaining: result.remaining,
+      storage: "memory",
+    })
+    return null
+  }
+  logServerEvent(context, "warn", "agent.daily_limit.exceeded", {
+    address,
+    limit,
+    resetAt: new Date(resetAt).toISOString(),
+    storage: "memory",
+  })
+  return json(
+    {
+      code: "agent_daily_limit_exceeded",
+      error: "Daily Staking Agent API limit reached for this wallet.",
+      limit,
+      resetAt: new Date(resetAt).toISOString(),
+    },
+    429,
+    context,
+    "agent_daily_limit_exceeded",
+    {
+      "retry-after": String(Math.max(1, Math.ceil((resetAt - now) / 1000))),
+      "x-safecafe-agent-daily-limit": String(limit),
+      "x-safecafe-agent-daily-remaining": "0",
+      "x-safecafe-agent-daily-reset": new Date(resetAt).toISOString(),
+    },
+  )
+}
+
+function consumeDailyLimitFromMemory(key: string, limit: number, resetAt: number) {
+  const now = Date.now()
+  for (const [bucketKey, bucket] of dailyLimitBuckets) {
+    if (bucket.resetAt <= now) dailyLimitBuckets.delete(bucketKey)
+  }
+  const bucket = dailyLimitBuckets.get(key)
+  if (!bucket || bucket.resetAt <= now) {
+    dailyLimitBuckets.set(key, { count: 1, resetAt })
+    return { allowed: true, remaining: Math.max(0, limit - 1) }
+  }
+  if (bucket.count >= limit) return { allowed: false, remaining: 0 }
+  bucket.count += 1
+  return { allowed: true, remaining: Math.max(0, limit - bucket.count) }
+}
+
+function utcDateKey(now: number) {
+  return new Date(now).toISOString().slice(0, 10)
+}
+
+function nextUtcDayStartMs(now: number) {
+  const date = new Date(now)
+  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + 1)
 }
 
 async function callUpstream(params: {
   base: string
   apiKey: string
   context: RequestContext
+  env: AgentApiEnv
   maxTokens: number
   model: string
   request: SanitizedRequest
@@ -318,7 +424,9 @@ async function callUpstream(params: {
     const message = readFirstChoicePart(data, "message")
     const toolCalls = readToolCalls(message)
     if (toolCalls.length) {
-      const toolResults = toolCalls.map((toolCall) => executeAgentTool(toolCall, params.request.context))
+      const toolResults = await Promise.all(
+        toolCalls.map((toolCall) => executeAgentTool(toolCall, params.request, params.context, params.env)),
+      )
       const second = await callChatCompletion({
         apiKey: params.apiKey,
         base: params.base,
@@ -361,7 +469,7 @@ async function callUpstream(params: {
         source: "llm",
         thinking: sanitizeOptionalText(readReasoningText(finalMessage)),
         tools: toolResults.flatMap((tool) => [
-          { ...tool, content: `Running ${tool.name}.`, status: "running" as const },
+          { ...tool, content: runningToolContent(tool.name), status: "running" as const },
           tool,
         ]),
       }
@@ -440,8 +548,14 @@ function readToolCalls(input: unknown): AgentToolCall[] {
     .slice(0, 4)
 }
 
-function executeAgentTool(toolCall: AgentToolCall, context: SanitizedRequest["context"]): AgentToolResult {
+async function executeAgentTool(
+  toolCall: AgentToolCall,
+  request: SanitizedRequest,
+  requestContext: RequestContext,
+  env: AgentFeedbackEnv,
+): Promise<AgentToolResult> {
   const name = toolCall.function.name
+  const context = request.context
   if (name === "get_staking_context") {
     const data = buildAgentRuntimeContext(context)
     return {
@@ -506,6 +620,45 @@ function executeAgentTool(toolCall: AgentToolCall, context: SanitizedRequest["co
       content: "Prepared staking action for wallet review.",
       data,
       modelContent: JSON.stringify(data),
+    }
+  }
+  if (name === "collect_user_feedback") {
+    const args = parseToolArguments(toolCall.function.arguments)
+    const result = await collectAgentFeedback(
+      {
+        area: args?.area,
+        category: args?.category,
+        originalText: args?.originalText ?? request.message,
+        severity: args?.severity,
+        summary: args?.summary,
+        context,
+      },
+      env,
+      requestContext,
+      {
+        signer: context.account,
+        subject: context.subjectAccount,
+        subjectKind: context.subjectKind,
+      },
+    )
+    const data = {
+      recorded: result.recorded,
+      storage: result.storage,
+      category: typeof args?.category === "string" ? args.category : "other",
+      summary: typeof args?.summary === "string" ? args.summary.slice(0, 240) : "",
+    }
+    return {
+      callId: toolCall.id,
+      name,
+      status: result.recorded ? "completed" : "failed",
+      content: result.recorded ? "Feedback recorded." : "Feedback could not be recorded.",
+      data,
+      modelContent: JSON.stringify({
+        ...data,
+        note: result.recorded
+          ? "The user's product feedback was recorded for future review. Briefly acknowledge it and continue helping."
+          : "The feedback could not be recorded. Continue helping without retrying unless the user asks.",
+      }),
     }
   }
   const data = { error: "Unsupported Agent tool." }
@@ -599,6 +752,7 @@ function streamingAgentResponse(params: {
   apiKey: string
   base: string
   context: RequestContext
+  env: AgentApiEnv
   maxTokens: number
   model: string
   request: SanitizedRequest
@@ -636,12 +790,14 @@ function streamingAgentResponse(params: {
         const first = await forwardUpstreamStream(upstream.body, controller, encoder)
         const firstToolCalls = first.toolCalls ?? []
         if (firstToolCalls.length) {
-          const toolResults = firstToolCalls.map((toolCall) => executeAgentTool(toolCall, params.request.context))
+          const toolResults = await Promise.all(
+            firstToolCalls.map((toolCall) => executeAgentTool(toolCall, params.request, params.context, params.env)),
+          )
           for (const tool of toolResults) {
             sendStreamEvent(controller, encoder, {
               type: "tool",
               ...tool,
-              content: `Running ${tool.name}.`,
+              content: runningToolContent(tool.name),
               status: "running",
             })
             sendStreamEvent(controller, encoder, { type: "tool", ...tool })
@@ -946,6 +1102,10 @@ function writeFinalEvent(
   })
 }
 
+function runningToolContent(toolName: string) {
+  return toolName === "collect_user_feedback" ? "Recording feedback." : `Running ${toolName}.`
+}
+
 function buildUpstreamMessages(request: SanitizedRequest): UpstreamMessage[] {
   const managedContext = manageConversationContext(request.messages)
   return [
@@ -1173,22 +1333,6 @@ function containsUnsafeAgentContent(content: string) {
   return unsafeOutputPattern.test(content)
 }
 
-function isRateLimited(request: Request) {
-  const key =
-    request.headers.get("cf-connecting-ip") ?? request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "local"
-  const now = Date.now()
-  for (const [bucketKey, bucket] of rateLimitBuckets) {
-    if (bucket.resetAt <= now) rateLimitBuckets.delete(bucketKey)
-  }
-  const bucket = rateLimitBuckets.get(key)
-  if (!bucket || bucket.resetAt <= now) {
-    rateLimitBuckets.set(key, { count: 1, resetAt: now + rateLimitWindowMs })
-    return false
-  }
-  bucket.count += 1
-  return bucket.count > maxRequestsPerWindow
-}
-
 function readBoundedInteger(value: string | undefined, fallback: number, min: number, max: number) {
   const parsed = Number(value)
   if (!Number.isSafeInteger(parsed)) return fallback
@@ -1198,12 +1342,19 @@ function readBoundedInteger(value: string | undefined, fallback: number, min: nu
 const unsafeOutputPattern =
   /\b(i\s+can\s+sign|i\s+will\s+sign|i'?ll\s+sign|sign\s+for\s+you|sign\s+on\s+your\s+behalf|i\s+can\s+submit|i\s+will\s+submit|i'?ll\s+submit|submit\s+for\s+you|submit\s+the\s+transaction\s+for\s+you|send\s+the\s+transaction\s+for\s+you|execute\s+automatically|automatically\s+execute|auto-?sign|call\s+data|calldata|raw\s+transaction|transaction\s+data|0x[a-f0-9]{32,})\b|我可以代签|我会代签|替你签名|帮你签名|我可以提交|我会提交|替你提交|帮你提交|帮我提交|替我提交|代我提交|代提交|自动执行|自动提交|代你提交|交易数据|调用数据/i
 
-function json(data: unknown, status: number, context?: RequestContext, errorCode?: string) {
+function json(
+  data: unknown,
+  status: number,
+  context?: RequestContext,
+  errorCode?: string,
+  headers: Record<string, string> = {},
+) {
   const response = new Response(JSON.stringify(data), {
     status,
     headers: {
       "content-type": "application/json; charset=utf-8",
       "cache-control": "no-store",
+      ...headers,
     },
   })
   return context ? withRequestHeaders(response, context, errorCode) : response

@@ -47,6 +47,7 @@ import {
 type ValidatorSort = "stake" | "participation" | "commission" | "name" | "yourStake"
 type SubmittingAction = Action | "claim-rewards-and-stake" | null
 type CustomRpcStatus = "checking" | "idle" | "invalid" | "valid"
+type UserSafeApiStatus = "checking" | "idle" | "invalid" | "valid"
 type UserLlmStatus = "checking" | "idle" | "invalid" | "valid"
 type UserLlmDraft = {
   apiBase: string
@@ -87,6 +88,7 @@ export function DashboardView(props: {
   connectedAccount: Address | null
   executeClaimRewardsAndStake: (validator: Address) => Promise<void>
   executeAction: (action?: Action, options?: ExecuteActionOptions) => Promise<void>
+  executionState: ActionExecutionSummary | null
   isLoadingValidators: boolean
   isSubmitting: boolean
   restakePreview: ActionPreview
@@ -94,6 +96,9 @@ export function DashboardView(props: {
   modal: Modal
   onConnect: () => Promise<void>
   openExplorer: (address: Address) => void
+  onContinueSafeProposal: () => void
+  onCopySafeTxHash: (safeTxHash: string) => void
+  onExportSafePayload: () => void
   selectAction: (action: Action) => void
   selectedValidator: ValidatorInfo
   setActiveNav: (nav: NavItem) => void
@@ -121,6 +126,7 @@ export function DashboardView(props: {
   const claimRewardsLoading = props.submittingAction === "claim-rewards"
   const claimAndStakeLoading = props.submittingAction === "claim-rewards-and-stake"
   const busyActionLabel = chainActionBusyLabel(t, props.txProgress)
+  const actionExecution = props.executionState?.action === props.action ? props.executionState : null
   const formControlsDisabled = props.isSubmitting
   const validatorOptions = props.validators.map((item) => ({
     value: item.address,
@@ -221,6 +227,15 @@ export function DashboardView(props: {
               </button>
               <TransactionPreview t={t} preview={props.actionPreview} />
               <ChainProgressPanel t={t} txPlan={props.txPlan} txProgress={props.txProgress} />
+              {!props.txProgress && actionExecution && (
+                <ExecutionSummaryCard
+                  summary={actionExecution}
+                  t={t}
+                  onContinueSafeProposal={props.onContinueSafeProposal}
+                  onCopySafeTxHash={props.onCopySafeTxHash}
+                  onExportSafePayload={props.onExportSafePayload}
+                />
+              )}
             </div>
           )}
           {props.action === "claim-rewards" && (
@@ -276,6 +291,15 @@ export function DashboardView(props: {
               <TransactionPreview t={t} title={t.claimAndRestake} preview={props.restakePreview} />
               <p className="restake-preview-note">{t.restakePreview}</p>
               <ChainProgressPanel t={t} txPlan={props.txPlan} txProgress={props.txProgress} />
+              {!props.txProgress && actionExecution && (
+                <ExecutionSummaryCard
+                  summary={actionExecution}
+                  t={t}
+                  onContinueSafeProposal={props.onContinueSafeProposal}
+                  onCopySafeTxHash={props.onCopySafeTxHash}
+                  onExportSafePayload={props.onExportSafePayload}
+                />
+              )}
             </div>
           )}
         </section>
@@ -860,6 +884,9 @@ export function RewardsView(props: {
   executeClaimRewardsAndStake: (validator: Address) => Promise<void>
   executeAction: (action?: Action, options?: ExecuteActionOptions) => Promise<void>
   isSubmitting: boolean
+  onContinueSafeProposal: () => void
+  onCopySafeTxHash: (safeTxHash: string) => void
+  onExportSafePayload: () => void
   restakePreview: ActionPreview
   selectedValidator: ValidatorInfo
   setValidator: (address: Address) => void
@@ -928,7 +955,15 @@ export function RewardsView(props: {
           >
             {isClaimingRewards ? <ButtonBusyLabel>{busyActionLabel}</ButtonBusyLabel> : t.claimToWallet}
           </button>
-          {!showClaimRewardsProgress && rewardExecution && <ExecutionSummaryCard summary={rewardExecution} t={t} />}
+          {!showClaimRewardsProgress && rewardExecution && (
+            <ExecutionSummaryCard
+              summary={rewardExecution}
+              t={t}
+              onContinueSafeProposal={props.onContinueSafeProposal}
+              onCopySafeTxHash={props.onCopySafeTxHash}
+              onExportSafePayload={props.onExportSafePayload}
+            />
+          )}
           {showClaimRewardsProgress && <ChainProgressPanel t={t} txPlan={props.txPlan} txProgress={props.txProgress} />}
         </section>
 
@@ -965,7 +1000,13 @@ export function RewardsView(props: {
             {isClaimingAndRestaking ? <ButtonBusyLabel>{busyActionLabel}</ButtonBusyLabel> : t.claimAndRestake}
           </button>
           {!showClaimAndRestakeProgress && restakeExecution && (
-            <ExecutionSummaryCard summary={restakeExecution} t={t} />
+            <ExecutionSummaryCard
+              summary={restakeExecution}
+              t={t}
+              onContinueSafeProposal={props.onContinueSafeProposal}
+              onCopySafeTxHash={props.onCopySafeTxHash}
+              onExportSafePayload={props.onExportSafePayload}
+            />
           )}
           {showClaimAndRestakeProgress && (
             <ChainProgressPanel t={t} txPlan={props.txPlan} txProgress={props.txProgress} />
@@ -983,13 +1024,20 @@ export function DocsView({
   customRpcStatus,
   customRpcUrl,
   onClearCustomRpc,
+  onClearUserSafeApiKey,
   onClearUserLlm,
   onCustomRpcChange,
   onSaveCustomRpc,
+  onSaveUserSafeApiKey,
   onSaveUserLlm,
+  onUserSafeApiKeyChange,
   onUserLlmChange,
   openExplorer,
   t,
+  userSafeApiKeyDraft,
+  userSafeApiMessage,
+  userSafeApiSaved,
+  userSafeApiStatus,
   userLlmDraft,
   userLlmMessage,
   userLlmSaved,
@@ -1001,13 +1049,20 @@ export function DocsView({
   customRpcStatus: CustomRpcStatus
   customRpcUrl: string
   onClearCustomRpc: () => void
+  onClearUserSafeApiKey: () => void
   onClearUserLlm: () => void
   onCustomRpcChange: (value: string) => void
   onSaveCustomRpc: () => void
+  onSaveUserSafeApiKey: () => Promise<void> | void
   onSaveUserLlm: () => Promise<void> | void
+  onUserSafeApiKeyChange: (value: string) => void
   onUserLlmChange: (field: keyof UserLlmDraft, value: string) => void
   openExplorer: (address: Address) => void
   t: MessageBundle
+  userSafeApiKeyDraft: string
+  userSafeApiMessage: string
+  userSafeApiSaved: boolean
+  userSafeApiStatus: UserSafeApiStatus
   userLlmDraft: UserLlmDraft
   userLlmMessage: string
   userLlmSaved: boolean
@@ -1035,6 +1090,15 @@ export function DocsView({
         ? t.userLlmChecking
         : userLlmStatus === "invalid"
           ? t.userLlmFailed
+          : "")
+  const userSafeApiStatusText =
+    userSafeApiMessage ||
+    (userSafeApiStatus === "valid"
+      ? t.userSafeApiActive
+      : userSafeApiStatus === "checking"
+        ? t.userSafeApiChecking
+        : userSafeApiStatus === "invalid"
+          ? t.userSafeApiFailed
           : "")
   return (
     <FullPanel>
@@ -1160,6 +1224,56 @@ export function DocsView({
           {customRpcStatusText ? <span>{customRpcStatusText}</span> : <span>{t.customRpcNotConfigured}</span>}
           {customRpcSavedUrl ? <strong title={customRpcSavedUrl}>{customRpcSavedUrl}</strong> : null}
         </div>
+      </section>
+      <section className="llm-settings-panel" aria-labelledby="user-safe-api-title">
+        <div className="rpc-settings-heading">
+          <div>
+            <h3 id="user-safe-api-title">{t.userSafeApiTitle}</h3>
+            <p>{t.userSafeApiDescription}</p>
+          </div>
+          {userSafeApiSaved ? <span className="rpc-settings-current">{t.userSafeApiCurrent}</span> : null}
+        </div>
+        <form
+          className="rpc-settings-form llm-settings-form"
+          onSubmit={(event) => {
+            event.preventDefault()
+            onSaveUserSafeApiKey()
+          }}
+        >
+          <div className="llm-settings-fields">
+            <label className="llm-field-secret llm-field-wide">
+              <span>{t.userSafeApiKey}</span>
+              <input
+                type="password"
+                value={userSafeApiKeyDraft}
+                placeholder={userSafeApiSaved ? t.userSafeApiKeySaved : "Safe API Key"}
+                autoComplete="off"
+                disabled={userSafeApiStatus === "checking"}
+                onChange={(event) => onUserSafeApiKeyChange(event.target.value)}
+              />
+              <small>{t.userSafeApiSecurityNote}</small>
+            </label>
+          </div>
+          <div className="llm-settings-footer">
+            <div className={`rpc-settings-status llm-settings-status ${userSafeApiStatus}`} aria-live="polite">
+              {userSafeApiStatusText ? <span>{userSafeApiStatusText}</span> : <span>{t.userSafeApiNotConfigured}</span>}
+            </div>
+            <div className="rpc-settings-actions llm-settings-actions">
+              <button type="submit" className="primary-button" disabled={userSafeApiStatus === "checking"}>
+                <ShieldCheck size={15} />
+                {userSafeApiStatus === "checking" ? t.userSafeApiChecking : t.userSafeApiSave}
+              </button>
+              <button
+                type="button"
+                className="code-button"
+                disabled={userSafeApiStatus === "checking"}
+                onClick={onClearUserSafeApiKey}
+              >
+                {t.userSafeApiClear}
+              </button>
+            </div>
+          </div>
+        </form>
       </section>
       <section className="llm-settings-panel" aria-labelledby="user-llm-title">
         <div className="rpc-settings-heading">

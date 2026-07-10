@@ -14,6 +14,9 @@
       "!node_modules",
       "!.wrangler",
       "!output",
+      "!scripts/getChainList.js",
+      "!scripts/getChainList.json",
+      "!scripts/getChainList.live.js",
       "!tsconfig.tsbuildinfo"
     ]
   },

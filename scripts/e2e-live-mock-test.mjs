@@ -46,6 +46,7 @@ try {
   })
   await runScenario("staking decision and trust surfaces", () => runDecisionSurfaceFlow(page, driver))
   await runScenario("safe multisig discovery and selection", () => runSafeDiscoveryFlow(page))
+  await runScenario("safe threshold proposal flow", () => runSafeThresholdProposalFlow(page, driver, chain))
   await runScenario("dashboard tab switching and validation timing", () => runDashboardTabPersistenceFlow(driver))
   await runScenario("empty unstake tab switching", () => runEmptyUnstakeTabSwitchingFlow(driver, chain))
   await runScenario("staking overview validator positions", () => runDashboardValidatorDetailsFlow(driver))
@@ -96,7 +97,7 @@ async function runSafeDiscoveryFlow(page) {
   await walletDialog.getByText("Choose a discovered Safe or enter another Safe manually.").waitFor()
   await walletDialog.getByRole("button", { name: "Use Safe multisig" }).click()
   await page.getByText("Choose or enter a valid Safe address that is different from the connected wallet.").waitFor()
-  await walletDialog.getByRole("button", { name: "Safe multisig address" }).click()
+  await walletDialog.getByRole("button", { name: "Safe multisig address" }).first().click()
   await page.getByRole("option", { name: /0x111111.*111111/ }).click()
   const stakingSubjectRow = walletDialog.locator(".address-row", { hasText: "Staking account" })
   await stakingSubjectRow.getByText(/Safe - 1\/1 multisig/).waitFor()
@@ -104,6 +105,77 @@ async function runSafeDiscoveryFlow(page) {
   await walletDialog.getByRole("button", { name: "Use current wallet" }).click()
   await walletDialog.locator(".panel-title .icon-button").click()
   await walletDialog.waitFor({ state: "hidden" })
+}
+
+async function runSafeThresholdProposalFlow(page, driver, chain) {
+  const originalSafes = chain.state.safes
+  const originalOwners = chain.state.safeOwners
+  const originalThreshold = chain.state.safeThreshold
+  const originalAllowance = chain.state.stakingAllowance
+  const originalSafeBalance = chain.state.safeBalance
+  const originalStake = chain.state.validators[0].userStake
+  const secondOwner = "0x2222222222222222222222222222222222222222"
+  try {
+    chain.state.safes = ["0x1111111111111111111111111111111111111111"]
+    chain.state.safeOwners = [account.address, secondOwner]
+    chain.state.safeThreshold = 2n
+    chain.state.stakingAllowance = 0n
+    chain.state.safeProposals.clear()
+    await page.evaluate(() => {
+      window.localStorage.removeItem("safecafe:wallet-subjects")
+    })
+    await page.reload({ waitUntil: "networkidle" })
+    await driver.connectWallet()
+    await page
+      .getByRole("button", { name: /Wallet:/ })
+      .first()
+      .click()
+    const walletDialog = page.locator(".modal-backdrop", { hasText: "Signer wallet" })
+    await walletDialog.waitFor({ state: "visible" })
+    await walletDialog.getByRole("button", { name: "Use Safe multisig" }).click()
+    await walletDialog.getByRole("button", { name: "Safe multisig address" }).first().click()
+    await page.getByRole("option", { name: /0x111111.*2\/2/ }).click()
+    await walletDialog.locator(".panel-title .icon-button").click()
+    await walletDialog.waitFor({ state: "hidden" })
+
+    await driver.selectDashboardAction("Stake")
+    await driver.fillActionAmount("2")
+    const signCountBefore = await driver.walletPersonalSignCount()
+    await driver.submitPrimaryAction()
+    const proposalCard = page.locator(".execution-safe-proposal")
+    await proposalCard.getByText("Safe proposal pending").waitFor()
+    await proposalCard.getByText(/1\/2/).waitFor()
+    if (chain.state.safeProposals.size !== 1) {
+      throw new Error(`Expected one Safe proposal, got ${chain.state.safeProposals.size}`)
+    }
+    if (chain.state.validators[0].userStake !== originalStake) {
+      throw new Error("Safe proposal should not execute before threshold is met.")
+    }
+    const signCountAfterProposal = await driver.walletPersonalSignCount()
+    if (signCountAfterProposal < signCountBefore + 1) {
+      throw new Error(`Expected Safe proposal to request a signature, got ${signCountAfterProposal - signCountBefore}`)
+    }
+    const proposal = [...chain.state.safeProposals.values()][0]
+    proposal.confirmations.set(secondOwner, { owner: secondOwner, signature: `${secondOwner}:safe-signature` })
+    await page.getByRole("button", { name: "Continue Safe flow" }).click()
+    await page.getByText("Flow completed").waitFor()
+    await driver.expectValidatorStake({ amount: formatSafeAmount(originalStake + 2n * 10n ** 18n) })
+    await driver.expectSafeBalance(formatSafeAmount(originalSafeBalance - 2n * 10n ** 18n))
+  } finally {
+    chain.state.safes = originalSafes
+    chain.state.safeOwners = originalOwners
+    chain.state.safeThreshold = originalThreshold
+    chain.state.stakingAllowance = originalAllowance
+    chain.state.safeBalance = originalSafeBalance
+    chain.state.validators[0].userStake = originalStake
+    chain.state.safeProposals.clear()
+    await page.evaluate(() => {
+      window.localStorage.removeItem("safecafe:account-live-cache:v1")
+      window.localStorage.removeItem("safecafe:wallet-subjects")
+    })
+    await page.reload({ waitUntil: "networkidle" })
+    await driver.connectWallet()
+  }
 }
 
 async function runDecisionSurfaceFlow(page, driver) {
@@ -128,10 +200,10 @@ async function runDecisionSurfaceFlow(page, driver) {
   await page.getByRole("navigation", { name: "Primary navigation" }).getByRole("button", { name: "Overview" }).click()
   await driver.selectDashboardAction("Stake")
   await page.getByRole("button", { exact: true, name: "Rewards" }).click()
-  const rewardsPreview = page.locator(".workflow-panel .transaction-preview")
-  await rewardsPreview.getByText("Claim to wallet:").waitFor()
-  await rewardsPreview.getByText("Claim & restake:").waitFor()
-  await rewardsPreview.getByText("Core Contributors").waitFor()
+  const rewardsPanel = page.locator(".rewards-panel")
+  await rewardsPanel.locator(".reward-action-heading h3", { hasText: "Claim to wallet" }).waitFor()
+  await rewardsPanel.locator(".reward-action-heading h3", { hasText: "Claim & restake" }).waitFor()
+  await rewardsPanel.locator(".custom-select-label-text", { hasText: "Core Contributors" }).waitFor()
 }
 
 async function runEmptyUnstakeTabSwitchingFlow(driver, chain) {

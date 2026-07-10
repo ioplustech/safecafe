@@ -54,6 +54,20 @@ export type AgentChatResponse = {
   source: "llm" | "fallback"
 }
 
+export class AgentApiError extends Error {
+  code?: string
+  resetAt?: string
+  status: number
+
+  constructor(status: number, message: string, options?: { code?: string; resetAt?: string }) {
+    super(message)
+    this.name = "AgentApiError"
+    this.status = status
+    this.code = options?.code
+    this.resetAt = options?.resetAt
+  }
+}
+
 export type AgentStreamEvent =
   | { type: "thinking"; content: string }
   | {
@@ -73,7 +87,7 @@ export async function requestAgentReply(request: AgentChatRequest): Promise<Agen
     headers: agentRequestHeaders(request.authToken),
     body: JSON.stringify(request),
   })
-  if (!response.ok) throw new Error(`Agent API failed: ${response.status}`)
+  if (!response.ok) throw await readAgentApiError(response)
   return (await response.json()) as AgentChatResponse
 }
 
@@ -93,7 +107,7 @@ export async function requestAgentReplyStream(
     body: JSON.stringify({ ...request, stream: true }),
     signal,
   })
-  if (!response.ok) throw new Error(`Agent API failed: ${response.status}`)
+  if (!response.ok) throw await readAgentApiError(response)
   const contentType = response.headers.get("content-type") ?? ""
   if (!response.body || !contentType.includes("text/event-stream")) {
     const reply = (await response.json()) as AgentChatResponse
@@ -167,14 +181,14 @@ async function requestUserLlmReplyStream(
     return
   }
 
-  const toolResults = firstToolCalls.map((toolCall) => executeUserLlmTool(toolCall, request.context))
+  const toolResults = await Promise.all(firstToolCalls.map((toolCall) => executeUserLlmTool(toolCall, request)))
   for (const tool of toolResults) {
     onEvent({
       type: "tool",
       callId: tool.callId,
       name: tool.name,
       status: "running",
-      content: `Running ${tool.name}.`,
+      content: runningToolContent(tool.name),
     })
     onEvent(tool)
   }
@@ -287,8 +301,9 @@ function buildUserLlmMessages(request: AgentChatRequest): UpstreamMessage[] {
   ]
 }
 
-function executeUserLlmTool(toolCall: AgentToolCall, context: AgentChatRequest["context"]): AgentToolResult {
+async function executeUserLlmTool(toolCall: AgentToolCall, request: AgentChatRequest): Promise<AgentToolResult> {
   const name = toolCall.function.name
+  const context = request.context
   if (name === "get_staking_context") {
     const data = buildAgentRuntimeContext(context)
     return {
@@ -360,6 +375,40 @@ function executeUserLlmTool(toolCall: AgentToolCall, context: AgentChatRequest["
       modelContent: JSON.stringify(data),
     }
   }
+  if (name === "collect_user_feedback") {
+    const args = parseToolArguments(toolCall.function.arguments)
+    const result = await submitAgentFeedback(
+      {
+        area: args?.area,
+        category: args?.category,
+        context,
+        originalText: args?.originalText ?? request.message,
+        severity: args?.severity,
+        summary: args?.summary,
+      },
+      request.authToken,
+    )
+    const data = {
+      recorded: result.recorded,
+      storage: result.storage,
+      category: typeof args?.category === "string" ? args.category : "other",
+      summary: typeof args?.summary === "string" ? args.summary.slice(0, 240) : "",
+    }
+    return {
+      type: "tool",
+      callId: toolCall.id,
+      name,
+      status: result.recorded ? "completed" : "failed",
+      content: result.recorded ? "Feedback recorded." : "Feedback could not be recorded.",
+      data,
+      modelContent: JSON.stringify({
+        ...data,
+        note: result.recorded
+          ? "The user's product feedback was recorded for future review. Briefly acknowledge it and continue helping."
+          : "The feedback could not be recorded. Continue helping without retrying unless the user asks.",
+      }),
+    }
+  }
   const data = { error: "Unsupported Agent tool." }
   return {
     type: "tool",
@@ -370,6 +419,29 @@ function executeUserLlmTool(toolCall: AgentToolCall, context: AgentChatRequest["
     data,
     modelContent: JSON.stringify(data),
   }
+}
+
+async function submitAgentFeedback(input: Record<string, unknown>, authToken: string | null | undefined) {
+  try {
+    const response = await fetch("/api/agent/feedback", {
+      method: "POST",
+      headers: agentRequestHeaders(authToken),
+      body: JSON.stringify(input),
+    })
+    if (!response.ok) return { recorded: false, storage: "none" }
+    const body = (await response.json()) as unknown
+    const record = readRecord(body)
+    return {
+      recorded: record?.recorded === true,
+      storage: typeof record?.storage === "string" ? record.storage : "unknown",
+    }
+  } catch {
+    return { recorded: false, storage: "none" }
+  }
+}
+
+function runningToolContent(toolName: string) {
+  return toolName === "collect_user_feedback" ? "Recording feedback." : `Running ${toolName}.`
 }
 
 function parseUserLlmDelta(data: string) {
@@ -613,6 +685,25 @@ function agentRequestHeaders(authToken: string | null | undefined) {
   return {
     "content-type": "application/json",
     ...(authToken ? { authorization: `Bearer ${authToken}` } : {}),
+  }
+}
+
+async function readAgentApiError(response: Response) {
+  const fallback = `Agent API failed: ${response.status}`
+  try {
+    const body = (await response.json()) as unknown
+    if (!body || typeof body !== "object") return new AgentApiError(response.status, fallback)
+    const record = body as Record<string, unknown>
+    return new AgentApiError(
+      response.status,
+      typeof record.error === "string" && record.error.trim() ? record.error : fallback,
+      {
+        code: typeof record.code === "string" ? record.code : undefined,
+        resetAt: typeof record.resetAt === "string" ? record.resetAt : undefined,
+      },
+    )
+  } catch {
+    return new AgentApiError(response.status, fallback)
   }
 }
 

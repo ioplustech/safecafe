@@ -16,6 +16,7 @@ import {
   verifyChallengeToken,
   verifyWalletSignature,
 } from "./authSession"
+import { consumeIpRateLimit, type IpRateLimitHit } from "./ipRateLimit"
 import { forwardRpcRequest, type JsonRpcRequest } from "./rpcUpstream"
 import {
   createRequestContext,
@@ -65,6 +66,12 @@ const safeExecTransactionSelector = "0x6a761202"
 export async function handleRpcChallengeRequest(request: Request, env: RpcGatewayEnv): Promise<Response> {
   const context = createRequestContext(request, "auth.challenge")
   if (request.method !== "POST") return httpError(context, "method_not_allowed", "Method not allowed", 405)
+  const ipLimited = consumeIpRateLimit(request, env, context, {
+    bucket: "auth.challenge",
+    defaultLimit: 30,
+    limitEnvKey: "SAFECAFE_AUTH_IP_RATE_LIMIT_PER_MINUTE",
+  })
+  if (ipLimited) return httpIpRateLimitError(context, ipLimited)
   if (!canUseAuthSecret(env)) {
     return httpError(context, "rpc_auth_not_configured", "RPC auth is not configured.", 503)
   }
@@ -122,6 +129,12 @@ export async function handleRpcChallengeRequest(request: Request, env: RpcGatewa
 export async function handleRpcVerifyRequest(request: Request, env: RpcGatewayEnv): Promise<Response> {
   const context = createRequestContext(request, "auth.verify")
   if (request.method !== "POST") return httpError(context, "method_not_allowed", "Method not allowed", 405)
+  const ipLimited = consumeIpRateLimit(request, env, context, {
+    bucket: "auth.verify",
+    defaultLimit: 30,
+    limitEnvKey: "SAFECAFE_AUTH_IP_RATE_LIMIT_PER_MINUTE",
+  })
+  if (ipLimited) return httpIpRateLimitError(context, ipLimited)
   if (!canUseAuthSecret(env)) {
     return httpError(context, "rpc_auth_not_configured", "RPC auth is not configured.", 503)
   }
@@ -201,6 +214,22 @@ export async function handleEthereumRpcGatewayRequest(request: Request, env: Rpc
   const context = createRequestContext(request, "rpc.ethereum")
   if (request.method !== "POST") {
     return jsonRpcHttpError(context, null, -32600, "Only POST is supported.", 405, "method_not_allowed")
+  }
+  const ipLimited = consumeIpRateLimit(request, env, context, {
+    bucket: "rpc.ethereum",
+    defaultLimit: 120,
+    limitEnvKey: "SAFECAFE_RPC_IP_RATE_LIMIT_PER_MINUTE",
+  })
+  if (ipLimited) {
+    return jsonRpcHttpError(
+      context,
+      null,
+      -32005,
+      "Too many RPC requests from this IP. Please slow down.",
+      429,
+      ipLimited.code,
+      ipLimited.headers,
+    )
   }
   if (!canUseAuthSecret(env)) {
     return jsonRpcHttpError(context, null, -32000, "RPC auth is not configured.", 503, "rpc_auth_not_configured")
@@ -358,10 +387,17 @@ function isJsonRpcId(value: unknown) {
   return typeof value === "string" || typeof value === "number" || value === null
 }
 
-function json(payload: unknown, status = 200, cacheControl = "no-store", context?: RequestContext, errorCode?: string) {
+function json(
+  payload: unknown,
+  status = 200,
+  cacheControl = "no-store",
+  context?: RequestContext,
+  errorCode?: string,
+  headers: Record<string, string> = {},
+) {
   const response = new Response(JSON.stringify(payload), {
     status,
-    headers: { "cache-control": cacheControl, "content-type": "application/json; charset=utf-8" },
+    headers: { "cache-control": cacheControl, "content-type": "application/json; charset=utf-8", ...headers },
   })
   return context ? withRequestHeaders(response, context, errorCode) : response
 }
@@ -382,6 +418,7 @@ function jsonRpcHttpError(
   message: string,
   status: number,
   reason: string,
+  headers: Record<string, string> = {},
 ) {
   logServerEvent(context, status >= 500 ? "error" : "warn", "rpc.json_rpc.http_error", {
     jsonRpcCode,
@@ -389,7 +426,24 @@ function jsonRpcHttpError(
     reason,
     status,
   })
-  return json(jsonRpcError(context, id, jsonRpcCode, message, reason), status, "no-store", context, reason)
+  return json(jsonRpcError(context, id, jsonRpcCode, message, reason), status, "no-store", context, reason, headers)
+}
+
+function httpIpRateLimitError(context: RequestContext, hit: IpRateLimitHit) {
+  return json(
+    {
+      code: hit.code,
+      error: "Too many requests from this IP. Please slow down.",
+      limit: hit.limit,
+      requestId: context.requestId,
+      resetAt: new Date(hit.resetAt).toISOString(),
+    },
+    429,
+    "no-store",
+    context,
+    hit.code,
+    hit.headers,
+  )
 }
 
 function jsonRpcError(

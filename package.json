@@ -37,10 +37,13 @@
     "canary:web": "pnpm test:e2e:live-mock",
     "canary:web:dev": "pnpm test:e2e:live-mock:dev",
     "test:mock-chain": "node scripts/e2e/mockChain-test.mjs",
+    "test:cli:safe": "tsx scripts/cli-safe-flow-test.mjs",
     "test:integration": "pnpm build:cli && node scripts/integration-test.mjs",
     "test:system": "pnpm build && node scripts/system-test.mjs"
   },
   "dependencies": {
+    "@safe-global/api-kit": "5.0.1",
+    "@safe-global/protocol-kit": "8.0.3",
     "@vitejs/plugin-react": "5.1.4",
     "commander": "14.0.2",
     "lucide-react": "0.563.0",

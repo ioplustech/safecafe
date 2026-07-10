@@ -1,11 +1,13 @@
 import { getAddress, isAddress } from "viem"
 import { fetchRewardProof, type RewardProof } from "../protocol"
+import { consumeIpRateLimit, ipRateLimitResponse } from "./ipRateLimit"
 import { createRequestContext, logServerEvent, truncateMessage, withRequestHeaders } from "./serverDiagnostics"
+import type { RpcGatewayEnv } from "./serverEnv"
 
 const rewardProofCacheTtlMs = 5 * 60 * 1000
 const rewardProofCache = new Map<string, { proof: RewardProof | null; expiresAt: number }>()
 
-export async function handleRewardProofRequest(request: Request): Promise<Response> {
+export async function handleRewardProofRequest(request: Request, env: RpcGatewayEnv = {}): Promise<Response> {
   const context = createRequestContext(request, "/api/rewards/proof")
   if (request.method !== "GET") {
     return withRequestHeaders(
@@ -14,6 +16,12 @@ export async function handleRewardProofRequest(request: Request): Promise<Respon
       "method_not_allowed",
     )
   }
+  const ipLimited = consumeIpRateLimit(request, env, context, {
+    bucket: "rewards.proof",
+    defaultLimit: 60,
+    limitEnvKey: "SAFECAFE_READ_API_IP_RATE_LIMIT_PER_MINUTE",
+  })
+  if (ipLimited) return ipRateLimitResponse(context, ipLimited)
   const url = new URL(request.url)
   const account = url.searchParams.get("account")
   if (!account || !isAddress(account)) {

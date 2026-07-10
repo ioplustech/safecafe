@@ -307,14 +307,12 @@ export function createWebTestDriver({ account, baseUrl, chain, page }) {
 
   async function selectValidatorAction({ action, validatorLabel }) {
     const validator = page.locator(".validator-row", { hasText: validatorLabel }).first()
+    const actionLabel = action === "Stake" ? /^(Stake|Prepare stake)$/ : /^(Unstake|Prepare unstake)$/
     if ((await validator.count()) > 0) {
-      await validator.getByRole("button", { name: new RegExp(`^${escapeRegExp(action)}$`) }).click()
+      await validator.getByRole("button", { name: actionLabel }).click()
       return
     }
-    await page
-      .getByRole("button", { name: new RegExp(`^${escapeRegExp(action)}$`) })
-      .first()
-      .click()
+    await page.getByRole("button", { name: actionLabel }).first().click()
   }
 
   async function selectValidatorTableAction({ action, validatorLabel }) {
@@ -477,8 +475,4 @@ function toWei(amount) {
 
 function formatSafeAmountForSummary(value) {
   return (Number(value) / Number(eth)).toFixed(2)
-}
-
-function escapeRegExp(value) {
-  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }

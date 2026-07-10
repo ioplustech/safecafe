@@ -43,3 +43,4 @@ draft
 output
 proxies.json
 webshare_proxy.json
+.safe-address-cache.json

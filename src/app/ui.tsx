@@ -107,7 +107,19 @@ export function StatusBadge({ status, t }: { status: string; t: MessageBundle })
   return <span className={`status-badge ${status}`}>{label}</span>
 }
 
-export function ExecutionSummaryCard({ summary, t }: { summary: PlanExecutionSummary; t: MessageBundle }) {
+export function ExecutionSummaryCard({
+  onContinueSafeProposal,
+  onCopySafeTxHash,
+  onExportSafePayload,
+  summary,
+  t,
+}: {
+  onContinueSafeProposal?: () => void
+  onCopySafeTxHash?: (safeTxHash: string) => void
+  onExportSafePayload?: () => void
+  summary: PlanExecutionSummary
+  t: MessageBundle
+}) {
   const title =
     summary.status === "completed"
       ? t.executionCompletedTitle
@@ -143,8 +155,50 @@ export function ExecutionSummaryCard({ summary, t }: { summary: PlanExecutionSum
           </span>
         ))}
       </div>
+      {summary.safeProposal && (
+        <div className="execution-safe-proposal">
+          <span>
+            <strong>
+              {summary.safeProposal.status === "executed" ? t.safeProposalExecuted : t.safeProposalPending}
+            </strong>
+            <small>
+              {summary.safeProposal.confirmations}/{summary.safeProposal.threshold} · {summary.safeProposal.safeTxHash}
+            </small>
+          </span>
+          <div className="execution-safe-actions">
+            {onCopySafeTxHash && (
+              <CopyActionButton
+                className="code-icon-button"
+                copiedLabel={t.copied}
+                label={t.safeProposalCopyHash}
+                onCopy={() => onCopySafeTxHash(summary.safeProposal?.safeTxHash ?? "")}
+                value={summary.safeProposal.safeTxHash}
+              />
+            )}
+            <ExternalActionButton
+              className="code-icon-button"
+              href={safeAppTransactionUrl(summary.safeProposal.safeAddress, summary.safeProposal.safeTxHash)}
+              label={t.safeProposalOpenSafe}
+            />
+            {onExportSafePayload && (
+              <button type="button" className="soft-button compact" onClick={onExportSafePayload}>
+                {t.exportSafePayload}
+              </button>
+            )}
+            {summary.safeProposal.status === "pending" && onContinueSafeProposal && (
+              <button type="button" className="primary-button compact" onClick={onContinueSafeProposal}>
+                {t.safeProposalContinue}
+              </button>
+            )}
+          </div>
+        </div>
+      )}
     </section>
   )
+}
+
+function safeAppTransactionUrl(safeAddress: string, safeTxHash: string) {
+  return `https://app.safe.global/transactions/tx?safe=eth:${safeAddress}&id=multisig_${safeAddress}_${safeTxHash}`
 }
 
 export function ConfirmDialog(props: {

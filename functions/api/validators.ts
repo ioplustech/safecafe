@@ -1,5 +1,8 @@
+import type { RpcGatewayEnv } from "../../src/server/serverEnv"
 import { handleValidatorsRequest } from "../../src/server/validators"
 
-export const onRequestGet: PagesFunction = async ({ request }) => handleValidatorsRequest(request)
+export const onRequestGet: PagesFunction<RpcGatewayEnv> = async ({ env, request }) =>
+  handleValidatorsRequest(request, env)
 
-export const onRequestPost: PagesFunction = async ({ request }) => handleValidatorsRequest(request)
+export const onRequestPost: PagesFunction<RpcGatewayEnv> = async ({ env, request }) =>
+  handleValidatorsRequest(request, env)
