@@ -1,6 +1,6 @@
 {
   "name": "safecafe",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Guided Safenet staking web app and CLI with a calm consumer-grade experience.",
   "license": "MIT",

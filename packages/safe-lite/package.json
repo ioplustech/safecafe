@@ -1,6 +1,6 @@
 {
   "name": "@safecafe/safe-lite",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Tiny Safe multisig helpers for Safecafe staking flows.",
   "license": "MIT",
   "type": "module",
