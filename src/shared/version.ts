@@ -1,1 +1,1 @@
-export const SAFECAFE_VERSION = "0.1.1"
+export const SAFECAFE_VERSION = "0.2.0"
