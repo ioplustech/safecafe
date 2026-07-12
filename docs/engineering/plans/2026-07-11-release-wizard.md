@@ -1,6 +1,6 @@
 # Safecafe Interactive Release Wizard Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> This is a completed implementation plan retained as engineering history. Prefer current source code, `README.md`, `CLOUDFLARE.md`, and release tests for product behavior.
 
 **Goal:** Add a resumable `pnpm release` wizard that publishes one Web build to IPFS and Cloudflare, pauses for a manual ENS contenthash update, then verifies the release until the target CID is active.
 

@@ -1,6 +1,6 @@
 # Staking Agent Implementation Plan
 
-> **For agentic workers:** This is a historical implementation record for the Staking Agent. Prefer current source code, `README.md`, `cli/README.md`, `TESTING.md`, and `RESILIENCE.md` for product behavior. Older mentions of Safe payload export have been superseded by direct wallet confirmation and Safe Transaction Service proposal/confirmation/execution flows.
+> This is a historical implementation record for the Staking Agent. Prefer current source code, `README.md`, `cli/README.md`, `TESTING.md`, and `RESILIENCE.md` for product behavior. Older mentions of Safe payload export have been superseded by direct wallet confirmation and Safe Transaction Service proposal/confirmation/execution flows.
 
 **Goal:** Build a non-custodial Staking Agent that turns bounded natural-language staking instructions into validated, reviewable multi-step transaction plans that the user must explicitly confirm with their wallet or Safe owner flow.
 

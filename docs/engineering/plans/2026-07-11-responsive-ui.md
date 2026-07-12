@@ -1,6 +1,6 @@
 # Safecafe Responsive UI Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> This is a completed implementation plan retained as engineering history. Prefer current source code and `TESTING.md` for product behavior.
 
 **Goal:** 修复 Safecafe 在 320–1181px 范围内的 Agent、验证者列表和持仓布局问题，并让 UI Sweep 持续覆盖断点边界与大屏。
 
