@@ -43,11 +43,11 @@ import {
   StatusBadge,
   Tooltip,
 } from "./ui"
+import type { UserSafeApiStatus } from "./userSafeApiKey"
 
 type ValidatorSort = "stake" | "participation" | "commission" | "name" | "yourStake"
 type SubmittingAction = Action | "claim-rewards-and-stake" | null
 type CustomRpcStatus = "checking" | "idle" | "invalid" | "valid"
-type UserSafeApiStatus = "checking" | "idle" | "invalid" | "valid"
 type UserLlmStatus = "checking" | "idle" | "invalid" | "valid"
 type UserLlmDraft = {
   apiBase: string
@@ -1093,13 +1093,11 @@ export function DocsView({
           : "")
   const userSafeApiStatusText =
     userSafeApiMessage ||
-    (userSafeApiStatus === "valid"
+    (userSafeApiStatus === "configured"
       ? t.userSafeApiActive
-      : userSafeApiStatus === "checking"
-        ? t.userSafeApiChecking
-        : userSafeApiStatus === "invalid"
-          ? t.userSafeApiFailed
-          : "")
+      : userSafeApiStatus === "invalid"
+        ? t.userSafeApiFailed
+        : "")
   return (
     <FullPanel>
       <div className="docs-grid">
@@ -1248,7 +1246,6 @@ export function DocsView({
                 value={userSafeApiKeyDraft}
                 placeholder={userSafeApiSaved ? t.userSafeApiKeySaved : "Safe API Key"}
                 autoComplete="off"
-                disabled={userSafeApiStatus === "checking"}
                 onChange={(event) => onUserSafeApiKeyChange(event.target.value)}
               />
               <small>{t.userSafeApiSecurityNote}</small>
@@ -1259,16 +1256,11 @@ export function DocsView({
               {userSafeApiStatusText ? <span>{userSafeApiStatusText}</span> : <span>{t.userSafeApiNotConfigured}</span>}
             </div>
             <div className="rpc-settings-actions llm-settings-actions">
-              <button type="submit" className="primary-button" disabled={userSafeApiStatus === "checking"}>
+              <button type="submit" className="primary-button">
                 <ShieldCheck size={15} />
-                {userSafeApiStatus === "checking" ? t.userSafeApiChecking : t.userSafeApiSave}
+                {t.userSafeApiSave}
               </button>
-              <button
-                type="button"
-                className="code-button"
-                disabled={userSafeApiStatus === "checking"}
-                onClick={onClearUserSafeApiKey}
-              >
+              <button type="button" className="code-button" onClick={onClearUserSafeApiKey}>
                 {t.userSafeApiClear}
               </button>
             </div>

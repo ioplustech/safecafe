@@ -57,6 +57,30 @@ async function mockSafePrice(page) {
   )
 }
 
+async function mockValidatorProtocolData(page) {
+  await page.route("**/api/validators", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        source: "live",
+        withdrawDelay: "172800",
+        validators: [
+          {
+            address: "0xCc00DE0eA14c08669b26DcBFE365dBD9890B04D9",
+            commission: 5,
+            label: "Core Contributors",
+            participationRate: 98,
+            status: "active",
+            totalStake: "3000000000000000000",
+            userStake: "0",
+          },
+        ],
+      }),
+    }),
+  )
+}
+
 let logs = ""
 const preview = process.env.E2E_BASE_URL
   ? null
@@ -118,6 +142,7 @@ try {
     consoleErrors.push(error.message)
   })
   await mockSafePrice(page)
+  await mockValidatorProtocolData(page)
   await page.addInitScript(() => {
     const originalMeasure = performance.measure.bind(performance)
     performance.measure = (name, startOrMeasureOptions, endMark) => {
@@ -137,6 +162,24 @@ try {
   if (consoleErrors.length > 0) {
     throw new Error(`Unexpected browser console errors: ${consoleErrors.join("\n")}`)
   }
+  await page.getByText("3 SAFE", { exact: true }).waitFor()
+  await page.getByText("2 days", { exact: true }).waitFor()
+
+  let safeApiVerificationCalls = 0
+  await page.route("https://api.safe.global/**", (route) => {
+    safeApiVerificationCalls += 1
+    route.fulfill({ status: 200, contentType: "application/json", body: "{}" })
+  })
+  await page.goto(`${baseUrl}/settings`, { waitUntil: "networkidle" })
+  await page.getByLabel("Safe API Key").fill("release-020-invalid-key")
+  await page.getByRole("button", { name: "Save Safe API key" }).click()
+  await page.getByText("Safe API key is configured and will be checked by the next Safe request.").waitFor()
+  if (safeApiVerificationCalls !== 0) {
+    throw new Error(
+      `Expected Safe API key save not to claim network verification, got ${safeApiVerificationCalls} calls`,
+    )
+  }
+  await page.goto(baseUrl, { waitUntil: "networkidle" })
 
   const anonymousAgentResponse = await page.request.post(`${baseUrl}/api/agent`, {
     data: { message: "help me stake", messages: [], context: { validatorLabels: [] } },
@@ -905,10 +948,10 @@ try {
     Math.abs(mobileAfterDrag.y - mobileBeforeDrag.y) > 1 ||
     Math.abs(mobileAfterDrag.width - 44) > 1 ||
     Math.abs(mobileAfterDrag.height - 44) > 1 ||
-    Math.abs(mobileAfterDrag.x + mobileAfterDrag.width - 390) > 1
+    Math.abs(mobileAfterDrag.x + mobileAfterDrag.width - 382) > 1
   ) {
     throw new Error(
-      `Expected mobile launcher to remain a fixed 44px edge tab: before=${JSON.stringify(mobileBeforeDrag)} after=${JSON.stringify(mobileAfterDrag)}`,
+      `Expected mobile launcher to remain fully visible with an 8px inset: before=${JSON.stringify(mobileBeforeDrag)} after=${JSON.stringify(mobileAfterDrag)}`,
     )
   }
   await launcher.click()

@@ -1,17 +1,30 @@
-import { fetchValidators } from "../protocol"
+import { createPublicClient, fallback, http } from "viem"
+import { ethereumMainnet, fetchValidators, readHealth, readValidatorTotals } from "../protocol"
 import { bigintReplacer } from "../shared"
 import { consumeIpRateLimit, ipRateLimitResponse } from "./ipRateLimit"
+import { rpcUrls } from "./rpcUpstream"
 import { createRequestContext, logServerEvent, truncateMessage, withRequestHeaders } from "./serverDiagnostics"
 import type { RpcGatewayEnv } from "./serverEnv"
 
 const validatorMetadataCacheTtlMs = 5 * 60 * 1000
 let validatorMetadataCache: {
+  hasTotals: boolean
   source: "fallback" | "live"
   validators: Awaited<ReturnType<typeof fetchValidators>>
+  withdrawDelay: bigint | null
   expiresAt: number
 } | null = null
 
-export async function handleValidatorsRequest(request: Request, env: RpcGatewayEnv = {}): Promise<Response> {
+export async function handleValidatorsRequest(
+  request: Request,
+  env: RpcGatewayEnv = {},
+  dependencies: {
+    readProtocolData?: (validators: Awaited<ReturnType<typeof fetchValidators>>) => Promise<{
+      validators: Awaited<ReturnType<typeof fetchValidators>>
+      withdrawDelay: bigint
+    }>
+  } = {},
+): Promise<Response> {
   const context = createRequestContext(request, "/api/validators")
   if (request.method !== "GET") {
     return withRequestHeaders(
@@ -28,16 +41,47 @@ export async function handleValidatorsRequest(request: Request, env: RpcGatewayE
   if (ipLimited) return ipRateLimitResponse(context, ipLimited)
 
   const cached = validatorMetadataCache && validatorMetadataCache.expiresAt > Date.now() ? validatorMetadataCache : null
-  if (cached?.source === "live") {
+  if (cached?.source === "live" && cached.hasTotals) {
     return withRequestHeaders(
-      json({ requestId: context.requestId, source: cached.source, validators: cached.validators }, 200, "HIT"),
+      json(
+        {
+          requestId: context.requestId,
+          source: cached.source,
+          validators: cached.validators,
+          withdrawDelay: cached.withdrawDelay,
+        },
+        200,
+        "HIT",
+      ),
       context,
     )
   }
 
   try {
-    const validators = await readValidatorMetadata(request, context)
-    return withRequestHeaders(json({ requestId: context.requestId, source: "live", validators }, 200, "MISS"), context)
+    const validatorMetadata = await readValidatorMetadata(request, context)
+    const protocolData = dependencies.readProtocolData
+      ? await dependencies.readProtocolData(validatorMetadata)
+      : await readLiveValidatorProtocolData(validatorMetadata, env)
+    validatorMetadataCache = {
+      expiresAt: Date.now() + validatorMetadataCacheTtlMs,
+      hasTotals: true,
+      source: "live",
+      validators: protocolData.validators,
+      withdrawDelay: protocolData.withdrawDelay,
+    }
+    return withRequestHeaders(
+      json(
+        {
+          requestId: context.requestId,
+          source: "live",
+          validators: protocolData.validators,
+          withdrawDelay: protocolData.withdrawDelay,
+        },
+        200,
+        "MISS",
+      ),
+      context,
+    )
   } catch (error) {
     logServerEvent(context, "error", "validators.metadata.failed", {
       error: truncateMessage(error instanceof Error ? error.message : "Failed to load validator metadata."),
@@ -58,6 +102,21 @@ export async function handleValidatorsRequest(request: Request, env: RpcGatewayE
   }
 }
 
+async function readLiveValidatorProtocolData(
+  validators: Awaited<ReturnType<typeof fetchValidators>>,
+  env: RpcGatewayEnv,
+) {
+  const client = createPublicClient({
+    chain: ethereumMainnet,
+    transport: fallback((await rpcUrls(env)).map((rpcUrl) => http(rpcUrl, { timeout: 8_000 }))),
+  })
+  const [validatorsWithTotals, health] = await Promise.all([
+    readValidatorTotals(client, validators, { strict: true }),
+    readHealth(client),
+  ])
+  return { validators: validatorsWithTotals, withdrawDelay: health.withdrawDelay }
+}
+
 export async function readValidatorMetadata(
   _request?: Request,
   _context?: ReturnType<typeof createRequestContext>,
@@ -70,8 +129,10 @@ export async function readValidatorMetadata(
   })
   if (!options.fallback) {
     validatorMetadataCache = {
+      hasTotals: false,
       source: "live",
       validators,
+      withdrawDelay: null,
       expiresAt: Date.now() + validatorMetadataCacheTtlMs,
     }
   }

@@ -11,6 +11,9 @@ export async function runProviderModeTests({ baseUrl, browser }) {
   await runScenario("custom RPC bypasses Safecafe chain-data APIs", () => runCustomRpcMode({ baseUrl, browser }))
   await runScenario("custom LLM bypasses Safecafe Agent API", () => runCustomLlmMode({ baseUrl, browser }))
   await runScenario("user Safe API key bypasses Safecafe Safe proxy", () => runUserSafeApiMode({ baseUrl, browser }))
+  await runScenario("invalid user Safe API key is rejected on first Safe request", () =>
+    runInvalidUserSafeApiMode({ baseUrl, browser }),
+  )
 }
 
 async function runCustomRpcMode({ baseUrl, browser }) {
@@ -203,6 +206,58 @@ async function runUserSafeApiMode({ baseUrl, browser }) {
       throw new Error(`Expected user Safe API mode to bypass /api/safe/transaction, got ${backendSafeCalls}`)
     }
     assertNoPageErrors(errors, "user Safe API")
+  } finally {
+    await context.close()
+  }
+}
+
+async function runInvalidUserSafeApiMode({ baseUrl, browser }) {
+  const safeAddress = "0x1111111111111111111111111111111111111111"
+  const context = await browser.newContext({ viewport: { width: 1280, height: 840 } })
+  const page = await context.newPage()
+  const errors = collectPageErrors(page)
+  const chain = createMockChain({
+    account: account.address,
+    safeOwners: [account.address, "0x2222222222222222222222222222222222222222"],
+    safeThreshold: 2n,
+    safes: [safeAddress],
+    stakingAllowance: 2n * 10n ** 18n,
+  })
+  const driver = createWebTestDriver({ account: account.address, baseUrl, chain, page })
+  try {
+    await driver.install()
+    await page.addInitScript(
+      ({ apiKey, safe, signer }) => {
+        window.localStorage.setItem("safecafe:user-safe-api-key", apiKey)
+        window.localStorage.setItem("safecafe:wallet-subjects", JSON.stringify({ [signer.toLowerCase()]: safe }))
+      },
+      { apiKey: userSafeApiKey, safe: safeAddress, signer: account.address },
+    )
+    await page.route("https://api.safe.global/tx-service/eth/api/**", (route) =>
+      route.fulfill({
+        status: 401,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "Invalid API key" }),
+      }),
+    )
+
+    await driver.open()
+    await driver.expectSummary({ safeBalance: "100.00" })
+    await driver.stake({ amount: "1" })
+    const invalidKeyMessage =
+      "Safe API key is invalid or not allowed. Update your Safe API key in Settings, or try again later."
+    await page.getByText(invalidKeyMessage).first().waitFor()
+    const storedKey = await page.evaluate(() => window.localStorage.getItem("safecafe:user-safe-api-key"))
+    if (storedKey !== null) throw new Error("Expected a rejected user Safe API key to be removed from storage")
+    await page.getByRole("button", { exact: true, name: "Settings" }).click()
+    await page
+      .locator(".llm-settings-panel", { hasText: "Safe Transaction Service" })
+      .getByText(invalidKeyMessage)
+      .waitFor()
+    const unexpectedErrors = errors.filter(
+      (error) => !error.includes("server responded with a status of 401 (Unauthorized)"),
+    )
+    assertNoPageErrors(unexpectedErrors, "invalid user Safe API")
   } finally {
     await context.close()
   }

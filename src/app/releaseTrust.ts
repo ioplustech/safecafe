@@ -43,6 +43,7 @@ export type EnsContenthashStatus =
   | "matched"
   | "mismatch"
   | "missing"
+  | "resolved"
   | "unchecked"
   | "unsupported"
 
@@ -122,6 +123,12 @@ export function compactCid(cid: string) {
   return `${cid.slice(0, 10)}...${cid.slice(-8)}`
 }
 
+export function resolveEnsTrustStatus(expectedCid: string | null, resolvedCid: string | null): EnsContenthashStatus {
+  if (!resolvedCid) return expectedCid ? "unsupported" : "unchecked"
+  if (!expectedCid) return "resolved"
+  return resolvedCid.toLowerCase() === expectedCid.toLowerCase() ? "matched" : "mismatch"
+}
+
 export function findReleaseFile(record: IpfsReleaseRecord | null, path: string): IpfsReleaseFile | null {
   return record?.files.find((file) => file.path === path) ?? null
 }
@@ -168,9 +175,7 @@ async function readEnsContenthashState(expectedCid: string | null, rpcUrl?: stri
       uri: decoded.uri,
     }
 
-    if (!expectedCid) return baseState
-    if (!decoded.cid) return { ...baseState, status: "unsupported" }
-    return { ...baseState, status: decoded.cid.toLowerCase() === expectedCid.toLowerCase() ? "matched" : "mismatch" }
+    return { ...baseState, status: resolveEnsTrustStatus(expectedCid, decoded.cid) }
   } catch (error) {
     return {
       ...idleEnsState,

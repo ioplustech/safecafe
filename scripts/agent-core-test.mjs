@@ -32,6 +32,9 @@ import {
   writeStorageText,
   writeStoredWalletSubject,
 } from "../src/app/persistence.ts"
+import { resolveEnsTrustStatus } from "../src/app/releaseTrust.ts"
+import { defaultSafeSubjectInput } from "../src/app/safeSelection.ts"
+import { isUserSafeApiKeyRejected, resolveUserSafeApiSave } from "../src/app/userSafeApiKey.ts"
 import { findPreferredRestakeValidator } from "../src/app/validatorSelection.ts"
 import {
   CONTRACTS,
@@ -399,6 +402,10 @@ globalThis.location = { hostname: "bafybeicuiscughm4nzr7fln377jv243mi23yzbzk2ekl
 assert.equal(apiUrl("/api/health"), "https://safecafe.baserun.link/api/health")
 globalThis.location = { hostname: "ipfs.filebase.io" }
 assert.equal(apiUrl("/api/health"), "https://safecafe.baserun.link/api/health")
+globalThis.location = {
+  hostname: "bafybeidm3vzcww42dzwvqrmdxcbup4zlhvsvdi6gvazg7xsrygwbaqvptq.ipfs.inbrowser.link",
+}
+assert.equal(apiUrl("/api/health"), "https://safecafe.baserun.link/api/health")
 assert.equal(isSafecafeStaticFrontendHost("example.com"), false)
 delete globalThis.location
 assert.equal(isDefaultApiCorsOrigin("https://safe-staking.eth.limo"), true)
@@ -406,8 +413,43 @@ assert.equal(
   isDefaultApiCorsOrigin("https://bafybeicuiscughm4nzr7fln377jv243mi23yzbzk2eklvvteqmckjxs7fy.ipfs.dweb.link"),
   true,
 )
+assert.equal(
+  isDefaultApiCorsOrigin("https://bafybeidm3vzcww42dzwvqrmdxcbup4zlhvsvdi6gvazg7xsrygwbaqvptq.ipfs.inbrowser.link"),
+  true,
+)
 assert.equal(isDefaultApiCorsOrigin("https://evil.eth.limo"), false)
 assert.equal(isDefaultApiCorsOrigin("https://ipfs.filebase.io"), false)
+assert.equal(resolveEnsTrustStatus(null, "bafybeidm3vzcww42dzwvqrmdxcbup4zlhvsvdi6gvazg7xsrygwbaqvptq"), "resolved")
+assert.equal(
+  resolveEnsTrustStatus(
+    "bafybeidm3vzcww42dzwvqrmdxcbup4zlhvsvdi6gvazg7xsrygwbaqvptq",
+    "bafybeidm3vzcww42dzwvqrmdxcbup4zlhvsvdi6gvazg7xsrygwbaqvptq",
+  ),
+  "matched",
+)
+
+assert.deepEqual(resolveUserSafeApiSave("  user-safe-key  ", ""), {
+  key: "user-safe-key",
+  status: "configured",
+})
+assert.deepEqual(resolveUserSafeApiSave("", "stored-safe-key"), {
+  key: "stored-safe-key",
+  status: "configured",
+})
+assert.equal(resolveUserSafeApiSave("", ""), null)
+assert.equal(isUserSafeApiKeyRejected({ code: "safe_api_key_invalid" }), true)
+assert.equal(isUserSafeApiKeyRejected({ code: "safe_tx_service_rate_limited" }), false)
+assert.equal(isUserSafeApiKeyRejected(new Error("network failed")), false)
+assert.equal(
+  defaultSafeSubjectInput(
+    "self",
+    null,
+    mockValidators.map((validator) => validator.address),
+    "",
+  ),
+  mockValidators[0].address,
+)
+assert.equal(defaultSafeSubjectInput("safe", mockValidators[0].address, [], ""), mockValidators[0].address)
 
 const actionStatusMessages = {
   preparingAction: "Preparing...",
@@ -2224,13 +2266,23 @@ try {
   globalThis.fetch = mockFetch
   validatorMetadataTestHooks.resetCache()
 
-  const validatorsResponse = await handleValidatorsRequest(new Request("http://localhost/api/validators"))
+  const validatorsResponse = await handleValidatorsRequest(
+    new Request("http://localhost/api/validators"),
+    {},
+    {
+      readProtocolData: async (validators) => ({
+        validators: validators.map((validator) => ({ ...validator, totalStake: 10n ** 18n })),
+        withdrawDelay: mockSummary.withdrawDelay,
+      }),
+    },
+  )
   assert.equal(validatorsResponse.status, 200)
   assert.equal(validatorsResponse.headers.get("x-safecafe-cache"), "MISS")
   const validatorsJson = await validatorsResponse.json()
   assert.equal(validatorsJson.validators.length, 1)
   assert.equal(validatorsJson.validators[0].address, mockValidators[0].address)
-  assert.equal(validatorsJson.validators[0].totalStake, "0")
+  assert.equal(validatorsJson.validators[0].totalStake, (10n ** 18n).toString())
+  assert.equal(validatorsJson.withdrawDelay, mockSummary.withdrawDelay.toString())
   assert.equal(validatorMetadataCalls, 1)
 
   const cachedValidatorsResponse = await handleValidatorsRequest(new Request("http://localhost/api/validators"))

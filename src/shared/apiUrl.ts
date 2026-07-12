@@ -27,7 +27,7 @@ export function isSafecafeStaticFrontendHost(hostname: string): boolean {
 
 const staticIpfsGatewayHosts = new Set(["dweb.link", "ipfs.filebase.io", "ipfs.io"])
 
-const staticIpfsGatewaySuffixes = [".ipfs.dweb.link", ".ipfs.w3s.link", ".ipfs.nftstorage.link"]
+const staticIpfsGatewaySuffixes = [".ipfs.dweb.link", ".ipfs.inbrowser.link", ".ipfs.w3s.link", ".ipfs.nftstorage.link"]
 
 function normalizeApiBaseUrl(value?: string | null): string {
   const trimmed = value?.trim()

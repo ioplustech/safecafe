@@ -99,14 +99,16 @@ async function runSafeDiscoveryFlow(page) {
   await walletDialog.waitFor({ state: "visible" })
   await walletDialog.getByText("Choose a discovered Safe or enter another Safe manually.").waitFor()
   await walletDialog.getByRole("button", { name: "Use Safe multisig" }).click()
-  await page.getByText("Choose or enter a valid Safe address that is different from the connected wallet.").waitFor()
-  await walletDialog.getByRole("button", { name: "Safe multisig address" }).first().click()
-  await page.getByRole("option", { name: /0x111111.*111111/ }).click()
+  await walletDialog.waitFor({ state: "hidden" })
+  await page
+    .getByRole("button", { name: /Staking account: 0x111111.*1\/1/ })
+    .first()
+    .click()
+  await walletDialog.waitFor({ state: "visible" })
   const stakingSubjectRow = walletDialog.locator(".address-row", { hasText: "Staking account" })
   await stakingSubjectRow.getByText(/Safe - 1\/1 multisig/).waitFor()
   await stakingSubjectRow.getByText("0x11111111...11111111").waitFor()
   await walletDialog.getByRole("button", { name: "Use current wallet" }).click()
-  await walletDialog.locator(".panel-title .icon-button").click()
   await walletDialog.waitFor({ state: "hidden" })
 }
 
@@ -136,9 +138,6 @@ async function runSafeThresholdProposalFlow(page, driver, chain) {
     const walletDialog = page.locator(".modal-backdrop", { hasText: "Signer wallet" })
     await walletDialog.waitFor({ state: "visible" })
     await walletDialog.getByRole("button", { name: "Use Safe multisig" }).click()
-    await walletDialog.getByRole("button", { name: "Safe multisig address" }).first().click()
-    await page.getByRole("option", { name: /0x111111.*2\/2/ }).click()
-    await walletDialog.locator(".panel-title .icon-button").click()
     await walletDialog.waitFor({ state: "hidden" })
 
     await driver.selectDashboardAction("Stake")
@@ -212,9 +211,6 @@ async function runSafeThresholdTwoTransactionProposalFlow(page, driver, chain) {
     const walletDialog = page.locator(".modal-backdrop", { hasText: "Signer wallet" })
     await walletDialog.waitFor({ state: "visible" })
     await walletDialog.getByRole("button", { name: "Use Safe multisig" }).click()
-    await walletDialog.getByRole("button", { name: "Safe multisig address" }).first().click()
-    await page.getByRole("option", { name: /0x111111.*2\/2/ }).click()
-    await walletDialog.locator(".panel-title .icon-button").click()
     await walletDialog.waitFor({ state: "hidden" })
 
     await driver.selectDashboardAction("Stake")

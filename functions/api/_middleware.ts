@@ -4,8 +4,9 @@ const defaultAllowedOrigins = new Set([
   "https://safe-staking.eth.limo",
   "https://safecafe.baserun.link",
   "https://safecafe.pages.dev",
-  "https://bafybeicuiscughm4nzr7fln377jv243mi23yzbzk2eklvvteqmckjxs7fy.ipfs.dweb.link",
 ])
+
+const trustedIpfsOriginPattern = /^b[a-z2-7]{20,}\.ipfs\.(?:dweb|inbrowser|nftstorage|w3s)\.link$/
 
 export const onRequest: PagesFunction<RpcGatewayEnv> = async ({ env, next, request }) => {
   const corsHeaders = createCorsHeaders(request, env)
@@ -43,7 +44,7 @@ export function isDefaultApiCorsOrigin(origin: string) {
   try {
     const url = new URL(origin)
     if (url.protocol !== "https:") return false
-    return defaultAllowedOrigins.has(url.origin)
+    return defaultAllowedOrigins.has(url.origin) || trustedIpfsOriginPattern.test(url.hostname)
   } catch {
     return false
   }

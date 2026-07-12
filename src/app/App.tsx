@@ -106,6 +106,7 @@ import {
   type SafePriceState,
 } from "./types"
 import { ConfirmDialog, ExternalActionButton, FullPanel, Metric } from "./ui"
+import { isUserSafeApiKeyRejected, resolveUserSafeApiSave, type UserSafeApiStatus } from "./userSafeApiKey"
 import { compareBigintDesc, findPreferredRestakeValidator } from "./validatorSelection"
 import { DashboardView, DocsView, RewardsView, ValidatorTable, ValidatorToolbar, WithdrawalsView } from "./views"
 import { createWalletIdentity, isSelfSubject, normalizeAddress } from "./walletIdentity"
@@ -114,7 +115,6 @@ const navPaths = createPathMap(navItems)
 type ValidatorSort = "stake" | "participation" | "commission" | "name" | "yourStake"
 type WalletStatus = "idle" | "restoring" | "connecting" | "connected"
 type CustomRpcStatus = "checking" | "idle" | "invalid" | "valid"
-type UserSafeApiStatus = "checking" | "idle" | "invalid" | "valid"
 type UserLlmStatus = "checking" | "idle" | "invalid" | "valid"
 type UserLlmDraft = {
   apiBase: string
@@ -348,6 +348,7 @@ export function App() {
   const [walletStatus, setWalletStatus] = useState<WalletStatus>("idle")
   const [isLoadingValidators, setIsLoadingValidators] = useState(true)
   const [validators, setValidators] = useState<ValidatorInfo[]>([])
+  const [protocolWithdrawDelay, setProtocolWithdrawDelay] = useState(0n)
   const [validatorLoadError, setValidatorLoadError] = useState("")
   const [rewardProof, setRewardProof] = useState<RewardProof | null>(null)
   const [rewardProofStatus, setRewardProofStatus] = useState<RewardProofStatus>("missing")
@@ -365,7 +366,7 @@ export function App() {
   )
   const [userSafeApiKeyDraft, setUserSafeApiKeyDraft] = useState("")
   const [userSafeApiStatus, setUserSafeApiStatus] = useState<UserSafeApiStatus>(() =>
-    readStorageText(appStorageKeys.userSafeApiKey)?.trim() ? "valid" : "idle",
+    readStorageText(appStorageKeys.userSafeApiKey)?.trim() ? "configured" : "idle",
   )
   const [userSafeApiMessage, setUserSafeApiMessage] = useState("")
   const [userLlmConfig, setUserLlmConfig] = useState<UserLlmConfig | null>(() => readStoredUserLlmConfig())
@@ -385,10 +386,17 @@ export function App() {
   const connectedAccount = account
   const walletIdentity = useMemo(() => createWalletIdentity(account, stakingAccount), [account, stakingAccount])
   const subjectAccount = walletIdentity.subject
+  const selectedStakingSafe = useMemo(
+    () =>
+      stakingAccount && walletIdentity.subjectKind === "safe"
+        ? (discoveredSafes.find((safe) => isSameAddress(safe.address, stakingAccount)) ?? null)
+        : null,
+    [discoveredSafes, stakingAccount, walletIdentity.subjectKind],
+  )
   const customRpcEnabled = customRpcStatus === "valid" && Boolean(customRpcUrl.trim())
   const effectiveRpcUrl = customRpcEnabled ? customRpcUrl.trim() : import.meta.env.VITE_RPC_URL
   const releaseRecord = releaseTrust.record
-  const releaseCid = releaseRecord?.ipfs?.cid
+  const releaseCid = releaseRecord?.ipfs?.cid ?? releaseTrust.ens.cid
   const trustBadgeTone =
     releaseTrust.kind === "record" && !releaseRecord?.dirty && releaseTrust.ens.status === "matched"
       ? "verified"
@@ -397,7 +405,9 @@ export function App() {
     releaseTrust.kind === "loading" || releaseTrust.ens.status === "loading"
       ? t.reading
       : releaseTrust.kind !== "record"
-        ? t.notChecked
+        ? releaseTrust.ens.status === "resolved"
+          ? t.trustBadgePartial
+          : t.notChecked
         : releaseTrust.ens.status === "matched"
           ? releaseRecord?.dirty
             ? t.trustDirtyBuild
@@ -414,14 +424,28 @@ export function App() {
                     ? compactCid(releaseCid)
                     : t.notChecked
   const walletBusy = walletStatus === "restoring" || walletStatus === "connecting"
-  const walletButtonLabel = account
-    ? compactAddress(account, 6, 4)
+  const walletPrimaryAccount = walletIdentity.subjectKind === "safe" ? subjectAccount : account
+  const walletButtonLabel = walletPrimaryAccount
+    ? compactAddress(walletPrimaryAccount, 6, 4)
     : walletStatus === "restoring"
       ? t.walletRestoring
       : walletStatus === "connecting"
         ? t.walletConnecting
         : t.connectWallet
-  const walletButtonStatus = account ? t.connected : walletBusy ? t.reading : t.notConnected
+  const walletButtonStatus = account
+    ? selectedStakingSafe && selectedStakingSafe.threshold !== null && selectedStakingSafe.ownersCount !== null
+      ? `${selectedStakingSafe.threshold}/${selectedStakingSafe.ownersCount} ${t.safeMultisigBadge}`
+      : walletIdentity.subjectKind === "safe"
+        ? t.safeWallet
+        : t.connected
+    : walletBusy
+      ? t.reading
+      : t.notConnected
+  const walletButtonAriaLabel = account
+    ? walletIdentity.subjectKind === "safe" && subjectAccount
+      ? `${t.stakingSubject}: ${subjectAccount}, ${walletButtonStatus}; ${t.signerWallet}: ${account}`
+      : `${t.wallet}: ${walletButtonLabel}, ${walletButtonStatus}`
+    : t.connectWallet
   const desktopLanguageButtonRef = useRef<HTMLButtonElement | null>(null)
   const desktopLanguageMenuRef = useRef<HTMLDivElement | null>(null)
   const mobileLanguageButtonRef = useRef<HTMLButtonElement | null>(null)
@@ -554,7 +578,7 @@ export function App() {
     validatorStakeError,
     validators.length,
   ])
-  const displaySummary = hasLiveAccountData ? summary : emptySummary
+  const displaySummary = hasLiveAccountData ? summary : { ...emptySummary, withdrawDelay: protocolWithdrawDelay }
   const displayValidators = visibleValidators
   const displaySafePriceUsd = safePrice.usd
   const activeValidatorCount = useMemo(() => validators.filter((item) => item.status === "active").length, [validators])
@@ -568,7 +592,7 @@ export function App() {
     estimatedAnnualRewards,
     protocolTvlUsd: formatUsdFromSafe(validatorPoolTotal, displaySafePriceUsd),
     validatorPoolTotal,
-    withdrawDelay: summary.withdrawDelay || liveSnapshot?.withdrawDelay || 0n,
+    withdrawDelay: summary.withdrawDelay || liveSnapshot?.withdrawDelay || protocolWithdrawDelay,
   }
   const dashboardActionPreview = buildActionPreview({
     action: dashboardAction,
@@ -596,10 +620,8 @@ export function App() {
     t,
   })
   const selectedSafeHasMetadata = useMemo(() => {
-    if (!stakingAccount || walletIdentity.subjectKind !== "safe") return false
-    const selectedSafe = discoveredSafes.find((safe) => isSameAddress(safe.address, stakingAccount))
-    return Boolean(selectedSafe && hasSafeMultisigMetadata(selectedSafe))
-  }, [discoveredSafes, stakingAccount, walletIdentity.subjectKind])
+    return Boolean(selectedStakingSafe && hasSafeMultisigMetadata(selectedStakingSafe))
+  }, [selectedStakingSafe])
   const agentContext = useMemo(
     () => ({
       account,
@@ -813,11 +835,12 @@ export function App() {
   useEffect(() => {
     setIsLoadingValidators(true)
     setValidatorLoadError("")
-    fetchValidatorMetadata()
-      .then((items: ValidatorInfo[]) => {
+    fetchValidatorProtocolData()
+      .then((data) => {
         setValidatorStakeError("")
+        setProtocolWithdrawDelay(data.withdrawDelay)
         setValidators((current) => {
-          const merged = mergeValidatorMetadata(items, current)
+          const merged = mergeValidatorMetadata(data.validators, current)
           setValidator((selected) => {
             const nextSelected = findValidator(merged, selected)?.address ?? merged[0]?.address ?? selected
             if (nextSelected !== selected) writeStorageAddress(appStorageKeys.selectedValidator, nextSelected)
@@ -1284,29 +1307,20 @@ export function App() {
     setUserSafeApiMessage("")
   }
 
-  async function saveUserSafeApiKey() {
-    const candidate = userSafeApiKeyDraft.trim() || userSafeApiKey
-    if (!candidate) {
+  function saveUserSafeApiKey() {
+    const saved = resolveUserSafeApiSave(userSafeApiKeyDraft, userSafeApiKey)
+    if (!saved) {
       setUserSafeApiStatus("invalid")
       setUserSafeApiMessage(t.userSafeApiKeyRequired)
       toast(t.userSafeApiKeyRequired, "warning")
       return
     }
-    setUserSafeApiStatus("checking")
-    setUserSafeApiMessage(t.userSafeApiChecking)
-    try {
-      await verifyUserSafeApiKey(candidate, t)
-      setUserSafeApiKey(candidate)
-      setUserSafeApiKeyDraft("")
-      setUserSafeApiStatus("valid")
-      setUserSafeApiMessage(t.userSafeApiActive)
-      writeStorageText(appStorageKeys.userSafeApiKey, candidate)
-      toast(t.userSafeApiSaved, "success")
-    } catch (error) {
-      setUserSafeApiStatus("invalid")
-      setUserSafeApiMessage(error instanceof Error ? error.message : t.userSafeApiFailed)
-      toast(error instanceof Error ? error.message : t.userSafeApiFailed, "warning")
-    }
+    setUserSafeApiKey(saved.key)
+    setUserSafeApiKeyDraft("")
+    setUserSafeApiStatus(saved.status)
+    setUserSafeApiMessage(t.userSafeApiActive)
+    writeStorageText(appStorageKeys.userSafeApiKey, saved.key)
+    toast(t.userSafeApiSaved, "success")
   }
 
   function clearUserSafeApiKey() {
@@ -1815,22 +1829,34 @@ export function App() {
   }) {
     if (!account || !subjectAccount || !window.ethereum) throw new Error(t.agentAccountChanged)
     setTxProgress(t.safeProposalSubmitting)
-    const result = await submitSafeMultisigPlan({
-      origin: "Safecafe",
-      authToken: params.authToken,
-      plan: params.plan,
-      provider: window.ethereum,
-      rpcUrl: effectiveRpcUrl,
-      safeAddress: subjectAccount,
-      safeTxErrorMessages: {
-        safe_api_key_invalid: t.safeApiKeyInvalid,
-        safe_api_key_missing: t.safeApiKeyMissing,
-        safe_tx_service_failed: t.safeTxServiceFailed,
-        safe_tx_service_rate_limited: t.safeTxServiceRateLimited,
-      },
-      signer: account,
-      userSafeApiKey,
-    })
+    let result: Awaited<ReturnType<typeof submitSafeMultisigPlan>>
+    try {
+      result = await submitSafeMultisigPlan({
+        origin: "Safecafe",
+        authToken: params.authToken,
+        plan: params.plan,
+        provider: window.ethereum,
+        rpcUrl: effectiveRpcUrl,
+        safeAddress: subjectAccount,
+        safeTxErrorMessages: {
+          safe_api_key_invalid: t.safeApiKeyInvalid,
+          safe_api_key_missing: t.safeApiKeyMissing,
+          safe_tx_service_failed: t.safeTxServiceFailed,
+          safe_tx_service_rate_limited: t.safeTxServiceRateLimited,
+        },
+        signer: account,
+        userSafeApiKey,
+      })
+    } catch (error) {
+      if (userSafeApiKey && isUserSafeApiKeyRejected(error)) {
+        setUserSafeApiKey("")
+        setUserSafeApiKeyDraft(userSafeApiKey)
+        setUserSafeApiStatus("invalid")
+        setUserSafeApiMessage(t.safeApiKeyInvalid)
+        removeStorageValue(appStorageKeys.userSafeApiKey)
+      }
+      throw error
+    }
     if (result.mode === "executed") {
       removeStoredSafeProposal()
       setSafeMultisigPlan(null)
@@ -2140,7 +2166,7 @@ export function App() {
           type="button"
           className="wallet-pill"
           disabled={walletBusy}
-          aria-label={account ? `${t.wallet}: ${walletButtonLabel}, ${walletButtonStatus}` : t.connectWallet}
+          aria-label={walletButtonAriaLabel}
           aria-haspopup={account ? "dialog" : undefined}
           onClick={() => (account ? setModal({ type: "wallet" }) : connectWallet())}
         >
@@ -2196,11 +2222,11 @@ export function App() {
               className="mobile-wallet-button"
               onClick={() => (account ? setModal({ type: "wallet" }) : connectWallet())}
               disabled={walletBusy}
-              aria-label={account ? `${t.wallet}: ${walletButtonLabel}, ${walletButtonStatus}` : t.connectWallet}
+              aria-label={walletButtonAriaLabel}
               aria-haspopup={account ? "dialog" : undefined}
             >
               <Wallet size={17} />
-              <span>{account ? compactAddress(account, 5, 4) : walletButtonLabel}</span>
+              <span>{walletPrimaryAccount ? compactAddress(walletPrimaryAccount, 5, 4) : walletButtonLabel}</span>
             </button>
             <button
               type="button"
@@ -2526,11 +2552,13 @@ export function App() {
             }
             const identity = createWalletIdentity(account, nextSubject)
             selectStakingSubject(identity, { refresh: true })
+            setModal(null)
           }}
           onUseSignerAsSubject={() => {
             if (!account) return
             const identity = createWalletIdentity(account)
             selectStakingSubject(identity, { refresh: true })
+            setModal(null)
           }}
           t={t}
         />
@@ -2717,12 +2745,16 @@ async function fetchSafeMetadata(address: Address, signal?: AbortSignal): Promis
   return parseDiscoveredSafe(data.safe) ?? emptyDiscoveredSafe(address)
 }
 
-async function fetchValidatorMetadata(): Promise<ValidatorInfo[]> {
+async function fetchValidatorProtocolData(): Promise<{ validators: ValidatorInfo[]; withdrawDelay: bigint }> {
   const response = await fetch(apiUrl("/api/validators", import.meta.env.VITE_API_BASE_URL), { cache: "no-store" })
   if (!response.ok) throw new Error(await readApiError(response, "Validator metadata failed"))
-  const data = (await response.json()) as { validators?: unknown }
-  if (!Array.isArray(data.validators)) return []
-  return data.validators.map(parseValidatorInfo).filter((validator): validator is ValidatorInfo => Boolean(validator))
+  const data = (await response.json()) as { validators?: unknown; withdrawDelay?: unknown }
+  return {
+    validators: Array.isArray(data.validators)
+      ? data.validators.map(parseValidatorInfo).filter((validator): validator is ValidatorInfo => Boolean(validator))
+      : [],
+    withdrawDelay: toBigInt(data.withdrawDelay),
+  }
 }
 
 function parseValidatorInfo(value: unknown): ValidatorInfo | null {
@@ -3135,27 +3167,6 @@ async function verifyUserLlmConfig(config: UserLlmConfig, t: MessageBundle) {
   } catch (error) {
     if (error instanceof Error && error.message.startsWith(t.userLlmVerifyFailed)) throw error
     throw new Error(t.userLlmVerifyFailed)
-  }
-}
-
-async function verifyUserSafeApiKey(apiKey: string, t: MessageBundle) {
-  try {
-    const response = await fetch("https://api.safe.global/tx-service/eth/api/v1/about", {
-      headers: {
-        accept: "application/json",
-        authorization: `Bearer ${apiKey}`,
-      },
-    })
-    if (!response.ok) {
-      if (response.status === 401 || response.status === 403) throw new Error(t.userSafeApiUnauthorized)
-      if (response.status === 429) throw new Error(t.userSafeApiRateLimited)
-      throw new Error(`${t.userSafeApiFailed} (${response.status})`)
-    }
-  } catch (error) {
-    if (error instanceof Error && error.message.startsWith(t.userSafeApiFailed)) throw error
-    if (error instanceof Error && error.message === t.userSafeApiUnauthorized) throw error
-    if (error instanceof Error && error.message === t.userSafeApiRateLimited) throw error
-    throw new Error(t.userSafeApiVerifyFailed)
   }
 }
 

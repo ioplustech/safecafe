@@ -117,7 +117,11 @@ export async function readValidatorPositions(
   })
 }
 
-export async function readValidatorTotals(client: PublicClient, validators: ValidatorInfo[]): Promise<ValidatorInfo[]> {
+export async function readValidatorTotals(
+  client: PublicClient,
+  validators: ValidatorInfo[],
+  options: { strict?: boolean } = {},
+): Promise<ValidatorInfo[]> {
   const contracts = validators.map((validator) => ({
     address: CONTRACTS.staking,
     abi: stakingAbi,
@@ -126,6 +130,10 @@ export async function readValidatorTotals(client: PublicClient, validators: Vali
   }))
 
   const results = await client.multicall({ contracts, allowFailure: true })
+
+  if (options.strict && results.some((result) => result.status !== "success")) {
+    throw new Error("Failed to read validator totals from Ethereum mainnet.")
+  }
 
   return validators.map((validator, index) => {
     const totalStakeResult = results[index]

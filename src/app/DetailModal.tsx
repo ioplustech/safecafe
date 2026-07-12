@@ -13,6 +13,7 @@ import {
   safeStakingEthLimoUrl,
   sourceRepositoryUrl,
 } from "./releaseTrust"
+import { defaultSafeSubjectInput } from "./safeSelection"
 import type { DataStatus, DiscoveredSafe, Modal } from "./types"
 import { ChecklistRow, CopyActionButton, CustomSelect, ExternalActionButton, KeyValue } from "./ui"
 
@@ -35,7 +36,14 @@ export function DetailModal(props: {
   t: MessageBundle
 }) {
   const { account, dataStatus, modal, onClose, releaseTrust, subjectAccount, subjectKind, t } = props
-  const [subjectInput, setSubjectInput] = useState(subjectKind === "safe" ? (subjectAccount ?? "") : "")
+  const [subjectInput, setSubjectInput] = useState(() =>
+    defaultSafeSubjectInput(
+      subjectKind,
+      subjectAccount,
+      props.discoveredSafes.map((safe) => safe.address),
+      "",
+    ),
+  )
   const dialogRef = useRef<HTMLDivElement>(null)
   const selectedDiscoveredSafe = findDiscoveredSafe(props.discoveredSafes, subjectAccount)
   useEffect(() => {
@@ -53,8 +61,15 @@ export function DetailModal(props: {
   }, [])
 
   useEffect(() => {
-    setSubjectInput(subjectKind === "safe" ? (subjectAccount ?? "") : "")
-  }, [subjectAccount, subjectKind])
+    setSubjectInput((current) =>
+      defaultSafeSubjectInput(
+        subjectKind,
+        subjectAccount,
+        props.discoveredSafes.map((safe) => safe.address),
+        subjectKind === "safe" ? "" : current,
+      ),
+    )
+  }, [props.discoveredSafes, subjectAccount, subjectKind])
 
   let title = t.viewReadiness
   let content: ReactNode = <p>{t.readinessDescription}</p>
@@ -115,7 +130,11 @@ export function DetailModal(props: {
         <section className="trust-key-values">
           <KeyValue
             label={t.trustCid}
-            value={releaseRecord?.ipfs?.cid ? compactCid(releaseRecord.ipfs.cid) : t.notChecked}
+            value={
+              releaseRecord?.ipfs?.cid || releaseTrust.ens.cid
+                ? compactCid(releaseRecord?.ipfs?.cid ?? releaseTrust.ens.cid ?? "")
+                : t.notChecked
+            }
           />
           <KeyValue label={t.version} value={releaseRecord?.version ?? t.notChecked} />
           <KeyValue label={t.trustBuildCommand} value={releaseRecord?.build.command ?? t.notChecked} />
@@ -274,11 +293,8 @@ export function DetailModal(props: {
           <CustomSelect
             disabled={props.safeDiscoveryStatus === "loading" || props.discoveredSafes.length === 0}
             label={t.managedSafeAddress}
-            value={subjectKind === "safe" ? (subjectAccount ?? "") : ""}
-            onChange={(value) => {
-              setSubjectInput(value)
-              props.onRefreshSubject(value)
-            }}
+            value={subjectInput}
+            onChange={setSubjectInput}
             optionAction={{
               copiedLabel: t.copied,
               label: t.copy,
@@ -388,6 +404,8 @@ function trustEnsDetail(ens: EnsContenthashState, t: MessageBundle) {
       return t.trustContenthashMismatch
     case "missing":
       return t.trustContenthashMissing
+    case "resolved":
+      return t.trustContenthashResolved
     case "unsupported":
       return t.trustContenthashUnsupported
     case "error":
@@ -410,6 +428,9 @@ function trustStatusSummary(
     return [t.trustStatusReview, t.reading, "review"]
   }
   if (releaseTrust.kind !== "record") {
+    if (releaseTrust.kind === "manifest" && releaseTrust.ens.status === "resolved") {
+      return [t.trustStatusPartial, t.trustEnsResolvedNotice, "review"]
+    }
     return [t.trustStatusReview, t.trustFootnote, "review"]
   }
   if (releaseTrust.ens.status === "matched" && !releaseRecord?.dirty) {
