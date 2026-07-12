@@ -5,6 +5,9 @@
   "description": "Guided Safenet staking web app and CLI with a calm consumer-grade experience.",
   "license": "MIT",
   "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "bin": {
     "safecafe": "./cli/dist/index.js"
   },
@@ -48,20 +51,20 @@
   },
   "dependencies": {
     "@safecafe/safe-lite": "workspace:*",
-    "@vitejs/plugin-react": "5.1.4",
+    "@vitejs/plugin-react": "6.0.3",
     "commander": "14.0.2",
     "lucide-react": "0.563.0",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "sonner": "^2.0.7",
-    "tsx": "4.21.0",
+    "tsx": "4.23.0",
     "typescript": "5.9.3",
-    "viem": "2.46.2",
-    "vite": "7.3.2"
+    "viem": "2.55.0",
+    "vite": "8.1.4"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.2",
-    "@cloudflare/workers-types": "^5.20260705.1",
+    "@cloudflare/workers-types": "^5.20260711.1",
     "@filebase/sdk": "1.0.6",
     "@playwright/test": "^1.61.1",
     "@types/node": "24.10.13",
@@ -69,7 +72,7 @@
     "@types/react-dom": "19.2.3",
     "dotenv": "^17.4.2",
     "tsup": "8.5.1",
-    "wrangler": "4.90.0"
+    "wrangler": "4.110.0"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

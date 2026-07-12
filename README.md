@@ -31,7 +31,7 @@ Safecafe never takes custody of funds. Users review and sign transactions from t
 
 Requirements:
 
-- Node.js 22 or newer
+- Node.js 22.12 or newer
 - pnpm through Corepack
 
 ```bash
