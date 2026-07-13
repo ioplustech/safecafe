@@ -281,7 +281,7 @@ export function DetailModal(props: {
         <AddressRow
           label={t.stakingSubject}
           address={subjectAccount}
-          suffix={subjectKind === "safe" ? formatSafeSubjectBadge(selectedDiscoveredSafe, t) : "EOA"}
+          suffix={subjectKind === "safe" ? formatSafeSubjectShortBadge(selectedDiscoveredSafe, t) : "EOA"}
           fallback={t.notChecked}
           copyLabel={t.copy}
           openLabel={t.openExplorer}
@@ -303,7 +303,7 @@ export function DetailModal(props: {
             options={props.discoveredSafes.map((safe) => ({
               value: safe.address,
               label: compactAddress(safe.address, 8, 6),
-              badge: formatSafeMultisigBadge(safe, t) ?? undefined,
+              badge: formatSafeMultisigShortBadge(safe) ?? undefined,
               detail: t.managedSafeAddress,
             }))}
           />
@@ -381,14 +381,14 @@ function findDiscoveredSafe(safes: DiscoveredSafe[], address: Address | null): D
   return safes.find((safe) => safe.address.toLowerCase() === normalizedAddress) ?? null
 }
 
-function formatSafeMultisigBadge(safe: DiscoveredSafe | null, t: MessageBundle): string | null {
+function formatSafeMultisigShortBadge(safe: DiscoveredSafe | null): string | null {
   if (!safe || safe.threshold === null || safe.ownersCount === null) return null
-  return `${safe.threshold}/${safe.ownersCount} ${t.safeMultisigBadge}`
+  return `${safe.threshold}/${safe.ownersCount}`
 }
 
-function formatSafeSubjectBadge(safe: DiscoveredSafe | null, t: MessageBundle) {
-  const badge = formatSafeMultisigBadge(safe, t)
-  return badge ? t.safeSubjectBadge.replace("{badge}", badge) : t.safeWallet
+function formatSafeSubjectShortBadge(safe: DiscoveredSafe | null, t: MessageBundle) {
+  const badge = formatSafeMultisigShortBadge(safe)
+  return badge ? `${t.safeWallet} ${badge}` : t.safeWallet
 }
 
 function compactHash(value: string) {

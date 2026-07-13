@@ -106,7 +106,7 @@ async function runSafeDiscoveryFlow(page) {
     .click()
   await walletDialog.waitFor({ state: "visible" })
   const stakingSubjectRow = walletDialog.locator(".address-row", { hasText: "Staking account" })
-  await stakingSubjectRow.getByText(/Safe - 1\/1 multisig/).waitFor()
+  await stakingSubjectRow.getByText(/Safe 1\/1/).waitFor()
   await stakingSubjectRow.getByText("0x11111111...11111111").waitFor()
   await walletDialog.getByRole("button", { name: "Use current wallet" }).click()
   await walletDialog.waitFor({ state: "hidden" })

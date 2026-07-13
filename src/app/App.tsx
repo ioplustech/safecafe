@@ -423,6 +423,28 @@ export function App() {
                   : releaseCid
                     ? compactCid(releaseCid)
                     : t.notChecked
+  const trustBadgeMobileValue =
+    releaseTrust.kind === "loading" || releaseTrust.ens.status === "loading"
+      ? "..."
+      : releaseTrust.kind !== "record"
+        ? releaseTrust.ens.status === "resolved"
+          ? "Partial"
+          : "—"
+        : releaseTrust.ens.status === "matched"
+          ? releaseRecord?.dirty
+            ? "Dirty"
+            : "OK"
+          : releaseTrust.ens.status === "mismatch"
+            ? "Mismatch"
+            : releaseTrust.ens.status === "missing"
+              ? "No ENS"
+              : releaseTrust.ens.status === "unsupported"
+                ? "N/A"
+                : releaseTrust.ens.status === "error"
+                  ? "Error"
+                  : releaseCid
+                    ? compactCid(releaseCid)
+                    : "—"
   const walletBusy = walletStatus === "restoring" || walletStatus === "connecting"
   const walletPrimaryAccount = walletIdentity.subjectKind === "safe" ? subjectAccount : account
   const walletButtonLabel = walletPrimaryAccount
@@ -472,6 +494,10 @@ export function App() {
     if (!liveDataMeta) return ""
     return `${t.liveDataUpdatedAt}: ${formatLiveDataTimestamp(liveDataMeta.fetchedAt, locale)}`
   }, [liveDataMeta, locale, t.liveDataUpdatedAt])
+  const liveDataUpdatedTimeText = useMemo(() => {
+    if (!liveDataMeta) return ""
+    return formatLiveDataCompactTimestamp(liveDataMeta.fetchedAt, locale)
+  }, [liveDataMeta, locale])
   const summaryDescription = useMemo(() => {
     if (walletStatus === "restoring") return t.walletRestoring
     if (isReadingLive && !liveSnapshot && subjectAccount) return t.liveDataReading
@@ -2286,9 +2312,17 @@ export function App() {
                 aria-live="polite"
               >
                 <span className="live-data-state-main">
-                  <strong>{liveDataStatusText}</strong>
+                  <strong>
+                    <span className="desktop-long">{liveDataStatusText}</span>
+                    <span className="mobile-short">Live</span>
+                  </strong>
                 </span>
-                {liveDataUpdatedText && <small>{liveDataUpdatedText}</small>}
+                {liveDataUpdatedText && (
+                  <small>
+                    <span className="desktop-long">{liveDataUpdatedText}</span>
+                    <span className="mobile-short">{liveDataUpdatedTimeText}</span>
+                  </small>
+                )}
                 <button
                   type="button"
                   className="live-data-refresh-button"
@@ -2303,7 +2337,10 @@ export function App() {
             <section className="summary-trust-strip" aria-label={t.trustVerification}>
               <span className="summary-trust-network">
                 <ShieldCheck size={15} />
-                <strong>{t.chainIdentity}</strong>
+                <strong>
+                  <span className="desktop-long">{t.chainIdentity}</span>
+                  <span className="mobile-short">Eth 1</span>
+                </strong>
               </span>
               <ExternalActionButton
                 className="summary-contract-chip action-text-button"
@@ -2321,8 +2358,14 @@ export function App() {
               aria-label={t.openTrustCenter}
             >
               <ShieldCheck size={13} />
-              <span>{t.frontendProof}</span>
-              <small>{trustBadgeValue}</small>
+              <span>
+                <span className="desktop-long">{t.frontendProof}</span>
+                <span className="mobile-short">ENS</span>
+              </span>
+              <small>
+                <span className="desktop-long">{trustBadgeValue}</span>
+                <span className="mobile-short">{trustBadgeMobileValue}</span>
+              </small>
             </button>
           </div>
         </div>
@@ -2719,6 +2762,17 @@ function formatLiveDataTimestamp(fetchedAt: number, locale: Locale) {
     }).format(new Date(fetchedAt))
   } catch {
     return new Date(fetchedAt).toLocaleTimeString()
+  }
+}
+
+function formatLiveDataCompactTimestamp(fetchedAt: number, locale: Locale) {
+  try {
+    return new Intl.DateTimeFormat(locale, {
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(new Date(fetchedAt))
+  } catch {
+    return new Date(fetchedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
   }
 }
 

@@ -499,6 +499,10 @@ textarea:focus-visible {
   margin-top: 2px;
 }
 
+.mobile-short {
+  display: none;
+}
+
 .live-data-state {
   display: inline-flex;
   align-items: center;
@@ -3675,6 +3679,50 @@ textarea:focus-visible {
 }
 
 @media (max-width: 680px) {
+  .address-row {
+    grid-template-columns: minmax(82px, 0.36fr) minmax(0, 1.64fr);
+    gap: 8px;
+    padding: 13px 12px;
+  }
+
+  .address-row > span {
+    font-size: 0.7rem;
+    line-height: 1.25;
+  }
+
+  .address-row > strong.address-row-value {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 44px 44px;
+    gap: 4px 2px;
+    font-size: 0.86rem;
+  }
+
+  .address-row-address {
+    grid-column: 1;
+  }
+
+  .address-row-value .address-inline-button {
+    grid-row: 1;
+  }
+
+  .address-row-value .address-inline-button:first-of-type {
+    grid-column: 2;
+  }
+
+  .address-row-value .address-inline-button:last-of-type {
+    grid-column: 3;
+  }
+
+  .address-row-value em {
+    flex: 0 0 auto;
+    grid-column: 1 / -1;
+    grid-row: 2;
+    justify-self: start;
+    padding: 2px 6px;
+    font-size: 0.64rem;
+    white-space: nowrap;
+  }
+
   .trust-evidence-chain,
   .trust-key-values {
     grid-template-columns: 1fr;
@@ -5502,9 +5550,20 @@ textarea:focus-visible {
 
   .page-meta-row {
     display: grid;
-    grid-template-columns: minmax(0, 1fr);
-    gap: 10px;
+    grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.98fr) minmax(0, 0.88fr);
+    align-items: center;
+    gap: 0;
     width: 100%;
+    min-height: 44px;
+    border-block: 1px solid rgba(22, 32, 54, 0.08);
+  }
+
+  .desktop-long {
+    display: none;
+  }
+
+  .mobile-short {
+    display: inline;
   }
 
   .live-data-state,
@@ -5512,15 +5571,133 @@ textarea:focus-visible {
   .summary-trust-proof {
     width: 100%;
     max-width: none;
+    min-width: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    line-height: 1;
+  }
+
+  .page-meta-row svg {
+    display: block;
   }
 
   .live-data-state {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-columns: auto minmax(0, 1fr) 44px;
+    gap: 4px;
+    min-height: 44px;
+    padding: 0 0 0 8px;
+  }
+
+  .live-data-state.cached,
+  .live-data-state.loading {
+    border-color: transparent;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .live-data-state strong,
+  .live-data-state small,
+  .summary-trust-strip strong,
+  .summary-trust-proof span,
+  .summary-trust-proof small {
+    min-width: 0;
+  }
+
+  .live-data-state small {
+    max-width: 54px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .live-data-refresh-button,
+  .summary-contract-chip.action-text-button {
+    display: grid;
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    margin-block: 0;
+    padding: 0;
+    place-items: center;
+  }
+
+  .live-data-refresh-button::before,
+  .summary-contract-chip.action-text-button::before {
+    display: none;
+  }
+
+  .summary-trust-strip {
+    grid-template-columns: minmax(0, 1fr) 44px;
+    min-height: 44px;
+    gap: 2px;
+    padding: 0 0 0 8px;
+  }
+
+  .summary-trust-network {
+    display: grid;
+    grid-template-columns: 15px minmax(0, 1fr);
+    align-items: center;
+    gap: 4px;
+  }
+
+  .summary-contract-chip .inline-action-button-content {
+    display: none;
   }
 
   .summary-trust-proof {
-    justify-content: space-between;
+    display: grid;
+    grid-template-columns: 13px auto auto;
+    align-items: center;
+    gap: 4px;
+    justify-content: center;
+    margin-block: 0;
+    min-height: 44px;
+    min-width: 0;
+    padding: 0 6px;
+  }
+
+  .summary-trust-proof > svg,
+  .summary-trust-network > svg {
+    justify-self: center;
+  }
+
+  .summary-trust-proof::before {
+    display: none;
+  }
+
+  .summary-trust-strip,
+  .summary-trust-proof {
+    position: relative;
+  }
+
+  .summary-trust-strip::before,
+  .summary-trust-proof::after {
+    position: absolute;
+    top: 12px;
+    bottom: 12px;
+    width: 1px;
+    background: rgba(22, 32, 54, 0.09);
+    content: "";
+  }
+
+  .summary-trust-strip::before {
+    left: 0;
+  }
+
+  .summary-trust-proof::after {
+    left: 0;
+  }
+
+  .summary-trust-proof:hover,
+  .summary-contract-chip.action-text-button:hover {
+    background: rgba(0, 136, 121, 0.05);
+    transform: none;
+  }
+
+  .summary-trust-proof small {
+    max-width: 48px;
   }
 
   .overview-layout {
