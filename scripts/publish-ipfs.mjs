@@ -356,7 +356,7 @@ function updateCloudflareLatestRelease(manifest) {
     `- Filebase: ${manifest.ipfs.gateways.filebase}`,
     `- dweb.link: ${manifest.ipfs.gateways.dweb}`,
     `- Build manifest: ${manifest.ipfs.gateways.filebase}release-manifest.json`,
-    "- Release record: [releases/ipfs/latest.json](releases/ipfs/latest.json)",
+    "- Release record: [../releases/ipfs/latest.json](../releases/ipfs/latest.json)",
     "",
     "After verifying the links, set `safe-staking.eth` contenthash to the ENS contenthash above.",
     end,

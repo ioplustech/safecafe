@@ -101,12 +101,14 @@ export function createReleaseTrustLoadingState(): ReleaseTrustState {
 }
 
 export async function readCurrentReleaseTrust(rpcUrl?: string): Promise<ReleaseTrustState> {
-  const record = await readReleaseJson("/release-record.json", "/latest.json")
-  if (record?.ipfs?.cid) {
-    return {
-      ens: await readEnsContenthashState(record.ipfs.cid, rpcUrl),
-      kind: "record",
-      record,
+  if (!shouldPreferBundledReleaseManifest()) {
+    const record = await readReleaseJson("/release-record.json", "/latest.json")
+    if (record?.ipfs?.cid) {
+      return {
+        ens: await readEnsContenthashState(record.ipfs.cid, rpcUrl),
+        kind: "record",
+        record,
+      }
     }
   }
 
@@ -207,6 +209,16 @@ function decodeVarint(bytes: Uint8Array) {
     shift += 7
   }
   return null
+}
+
+function shouldPreferBundledReleaseManifest() {
+  const hostname = globalThis.location?.hostname ?? ""
+  return (
+    hostname === "safe-staking.eth.limo" ||
+    hostname.endsWith(".eth.limo") ||
+    hostname.includes(".ipfs.") ||
+    hostname === "ipfs.filebase.io"
+  )
 }
 
 function encodeBase32Multibase(bytes: Uint8Array) {

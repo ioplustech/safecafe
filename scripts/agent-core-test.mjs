@@ -547,8 +547,13 @@ assert.equal(
 )
 assert.match(
   releaseTrustSource,
+  /shouldPreferBundledReleaseManifest\(\)/,
+  "Release Trust should avoid external release-record lookups on ENS/IPFS gateways.",
+)
+assert.match(
+  releaseTrustSource,
   /readReleaseJson\("\/release-record\.json", "\/latest\.json"\)/,
-  "Release Trust should read the stable public record and keep the legacy static latest.json fallback.",
+  "Release Trust should still read the stable public record and keep the legacy static latest.json fallback on hosted mirrors.",
 )
 assert.match(
   publishIpfsSource,
