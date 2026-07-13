@@ -11,6 +11,9 @@ importers:
 
   .:
     dependencies:
+      '@safecafe/rate-limit':
+        specifier: workspace:*
+        version: link:packages/rate-limit
       '@safecafe/safe-lite':
         specifier: workspace:*
         version: link:packages/safe-lite
@@ -75,6 +78,18 @@ importers:
       wrangler:
         specifier: 4.110.0
         version: 4.110.0(@cloudflare/workers-types@5.20260711.1)
+
+  packages/rate-limit:
+    devDependencies:
+      '@types/node':
+        specifier: 24.10.13
+        version: 24.10.13
+      tsx:
+        specifier: 4.23.0
+        version: 4.23.0
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
 
   packages/safe-lite:
     devDependencies:

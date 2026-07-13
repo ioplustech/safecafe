@@ -13,7 +13,7 @@ export async function handleSafePriceRequest(request: Request, env: RpcGatewayEn
   }
   const ipLimited = consumeIpRateLimit(request, env, context, {
     bucket: "price.safe",
-    defaultLimit: 120,
+    defaultLimit: 60,
     limitEnvKey: "SAFECAFE_READ_API_IP_RATE_LIMIT_PER_MINUTE",
   })
   if (ipLimited) {

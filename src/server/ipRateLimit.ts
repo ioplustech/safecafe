@@ -1,3 +1,5 @@
+import { createFixedWindowRateLimiter } from "@safecafe/rate-limit"
+
 import { logServerEvent, type RequestContext, withRequestHeaders } from "./serverDiagnostics"
 
 export type IpRateLimitEnv = {
@@ -8,6 +10,7 @@ export type IpRateLimitEnv = {
   SAFECAFE_READ_API_IP_RATE_LIMIT_PER_MINUTE?: string
   SAFECAFE_RPC_IP_RATE_LIMIT_PER_MINUTE?: string
   SAFECAFE_SAFE_TX_IP_RATE_LIMIT_PER_MINUTE?: string
+  SAFECAFE_TRUST_PROXY_HEADERS?: string
 }
 
 type IpRateLimitOptions = {
@@ -19,6 +22,7 @@ type IpRateLimitOptions = {
 export type IpRateLimitHit = {
   code: "ip_rate_limited"
   limit: number
+  remaining: number
   resetAt: number
   retryAfterSeconds: number
   headers: Record<string, string>
@@ -26,7 +30,11 @@ export type IpRateLimitHit = {
 
 const ipRateLimitWindowMs = 60_000
 const maxConfiguredLimit = 100_000
-const ipBuckets = new Map<string, { count: number; resetAt: number }>()
+const maxIpRateLimitEntries = 10_000
+const ipRateLimiter = createFixedWindowRateLimiter({
+  maxEntries: maxIpRateLimitEntries,
+  windowMs: ipRateLimitWindowMs,
+})
 
 export function consumeIpRateLimit(
   request: Request,
@@ -37,40 +45,31 @@ export function consumeIpRateLimit(
   const limit = readRouteLimit(env, options)
   if (limit <= 0) return null
 
-  const now = Date.now()
-  const resetAt = now + ipRateLimitWindowMs
-  const clientKey = readClientKey(request)
-  const bucketKey = `${options.bucket}:${clientKey}`
+  const result = ipRateLimiter.consume({
+    bucket: options.bucket,
+    key: readClientKey(request, env),
+    limit,
+  })
+  if (result.allowed) return null
 
-  for (const [key, bucket] of ipBuckets) {
-    if (bucket.resetAt <= now) ipBuckets.delete(key)
-  }
-
-  const bucket = ipBuckets.get(bucketKey)
-  if (!bucket || bucket.resetAt <= now) {
-    ipBuckets.set(bucketKey, { count: 1, resetAt })
-    return null
-  }
-
-  bucket.count += 1
-  if (bucket.count <= limit) return null
-
-  const retryAfterSeconds = Math.max(1, Math.ceil((bucket.resetAt - now) / 1000))
+  const retryAfterSeconds = Math.max(1, Math.ceil(result.retryAfterMs / 1000))
   const hit: IpRateLimitHit = {
     code: "ip_rate_limited",
     limit,
-    resetAt: bucket.resetAt,
+    remaining: result.remaining,
+    resetAt: result.resetAt,
     retryAfterSeconds,
     headers: {
       "retry-after": String(retryAfterSeconds),
       "x-safecafe-ip-rate-limit": String(limit),
-      "x-safecafe-ip-rate-reset": new Date(bucket.resetAt).toISOString(),
+      "x-safecafe-ip-rate-remaining": String(result.remaining),
+      "x-safecafe-ip-rate-reset": new Date(result.resetAt).toISOString(),
     },
   }
   logServerEvent(context, "warn", "api.ip_rate_limited", {
     bucket: options.bucket,
     limit,
-    resetAt: new Date(bucket.resetAt).toISOString(),
+    resetAt: new Date(result.resetAt).toISOString(),
   })
   return hit
 }
@@ -101,21 +100,41 @@ export function ipRateLimitResponse(context: RequestContext, hit: IpRateLimitHit
 
 function readRouteLimit(env: IpRateLimitEnv, options: IpRateLimitOptions) {
   const routeValue = options.limitEnvKey ? env[options.limitEnvKey] : undefined
-  return readBoundedInteger(routeValue ?? env.SAFECAFE_API_IP_RATE_LIMIT_PER_MINUTE, options.defaultLimit)
+  return (
+    readConfiguredLimit(routeValue) ??
+    readConfiguredLimit(env.SAFECAFE_API_IP_RATE_LIMIT_PER_MINUTE) ??
+    options.defaultLimit
+  )
 }
 
-function readBoundedInteger(value: string | undefined, fallback: number) {
-  if (value === undefined || value.trim() === "") return fallback
-  const parsed = Number(value)
-  if (!Number.isSafeInteger(parsed)) return fallback
+function readConfiguredLimit(value: string | undefined) {
+  const trimmed = value?.trim()
+  if (!trimmed || !/^\d+$/.test(trimmed)) return null
+  const parsed = Number(trimmed)
+  if (!Number.isSafeInteger(parsed)) return null
   return Math.min(maxConfiguredLimit, Math.max(0, parsed))
 }
 
-function readClientKey(request: Request) {
-  const ip =
-    request.headers.get("cf-connecting-ip") ??
-    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
-    request.headers.get("x-real-ip") ??
-    "local"
-  return ip.slice(0, 120)
+function readClientKey(request: Request, env: IpRateLimitEnv) {
+  const cloudflareIp = cleanClientKey(request.headers.get("cf-connecting-ip"))
+  if (cloudflareIp) return cloudflareIp
+
+  if (env.SAFECAFE_TRUST_PROXY_HEADERS === "true") {
+    const forwardedIp = request.headers
+      .get("x-forwarded-for")
+      ?.split(",")
+      .map((value) => cleanClientKey(value))
+      .find((value): value is string => Boolean(value))
+    if (forwardedIp) return forwardedIp
+
+    const realIp = cleanClientKey(request.headers.get("x-real-ip"))
+    if (realIp) return realIp
+  }
+
+  return "local"
+}
+
+function cleanClientKey(value: string | null) {
+  const trimmed = value?.trim()
+  return trimmed ? trimmed.slice(0, 120) : null
 }

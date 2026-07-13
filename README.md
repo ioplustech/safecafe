@@ -73,7 +73,7 @@ The built-in RPC gateway (`/api/rpc/ethereum`) supports wallet-based session aut
 
 ### Server IP Rate Limits
 
-All built-in API limits are lightweight in-memory counters per client IP. They are intended as a first abuse-control layer for Cloudflare Pages Functions; counters may reset when a local server or Cloudflare isolate restarts. Set any value to `0` to disable that specific limit.
+All built-in API limits use the private `@safecafe/rate-limit` workspace package. Counters are bounded, fixed-window, in-memory values scoped to one process or Cloudflare isolate, so they may reset when an isolate restarts and are not globally strict. Each isolate retains at most 10,000 active route/client buckets. Set any limit to `0` to disable it.
 
 | Variable | Default | Applies to |
 | --- | ---: | --- |
@@ -84,6 +84,9 @@ All built-in API limits are lightweight in-memory counters per client IP. They a
 | `SAFECAFE_READ_API_IP_RATE_LIMIT_PER_MINUTE` | `60` | `/api/account/live`, `/api/safes`, `/api/validators`, `/api/rewards/proof`, `/api/price/safe` |
 | `SAFECAFE_RPC_IP_RATE_LIMIT_PER_MINUTE` | `120` | `/api/rpc/ethereum` |
 | `SAFECAFE_SAFE_TX_IP_RATE_LIMIT_PER_MINUTE` | `30` | `/api/safe/transaction` |
+| `SAFECAFE_TRUST_PROXY_HEADERS` | `false` | Trust `x-forwarded-for` and `x-real-ip` when running behind a trusted non-Cloudflare proxy. |
+
+`cf-connecting-ip` is trusted by default on Cloudflare. Forwarded proxy headers are ignored unless `SAFECAFE_TRUST_PROXY_HEADERS=true`, because clients can forge them when no trusted reverse proxy overwrites the incoming values.
 
 ### Staking Agent (LLM)
 

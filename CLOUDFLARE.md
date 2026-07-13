@@ -122,6 +122,9 @@ Configure these environment variables before enabling live account reads, authen
 - `SAFECAFE_READ_API_IP_RATE_LIMIT_PER_MINUTE` (optional): IP limit for read APIs such as `/api/account/live`, `/api/safes`, `/api/validators`, `/api/rewards/proof`, and `/api/price/safe`. Default: `60`; `0` disables it.
 - `SAFECAFE_RPC_IP_RATE_LIMIT_PER_MINUTE` (optional): IP limit for `/api/rpc/ethereum`. Default: `120`; `0` disables it.
 - `SAFECAFE_SAFE_TX_IP_RATE_LIMIT_PER_MINUTE` (optional): IP limit for `/api/safe/transaction`. Default: `30`; `0` disables it.
+- `SAFECAFE_TRUST_PROXY_HEADERS` (optional): trust `x-forwarded-for` and `x-real-ip` when self-hosting behind a trusted reverse proxy. Default: `false`. Cloudflare deployments use `cf-connecting-ip` without enabling this option.
+
+The built-in limiter is a bounded fixed-window memory implementation. Each process or Cloudflare isolate retains at most 10,000 active route/client buckets; counters reset with the isolate and are not globally consistent. Use Cloudflare Rate Limiting Rules when strict edge-wide enforcement or stronger cost guarantees are required.
 
 `SAFECAFE_LLM_API_KEY` must not be exposed as a `VITE_*` variable. The web app calls the Cloudflare Pages Function at `/api/agent`; the function reads the server-side `SAFECAFE_LLM_*` variables and returns only the Agent response. During `pnpm release`, `.env` is the source of truth for Safecafe, Vite, and Filebase release configuration when it exists; shell values for missing release keys are ignored. Without `.env`, the wizard uses the current shell environment. `VITE_*` values are consumed while building the browser bundle, while non-empty server runtime variables such as `SAFECAFE_LLM_*` and `SAFECAFE_SAFE_API_KEYS` are synchronized to Cloudflare Pages secrets. Empty values are intentionally not treated as deletion requests; remove stale Cloudflare secrets manually from the dashboard or Wrangler when needed.
 

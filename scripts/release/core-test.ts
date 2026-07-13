@@ -93,11 +93,18 @@ test("collectCloudflarePagesSecrets returns only deploy runtime secrets", () => 
     SAFECAFE_LLM_API_KEY: "llm-secret",
     SAFECAFE_SAFE_API_KEYS: "safe-secret",
     SAFECAFE_AGENT_TEST_VERIFIED_ACCESS: "true",
+    SAFECAFE_TRUST_PROXY_HEADERS: "true",
     VITE_AGENT_AUTH: "true",
   })
   assert.deepEqual(
     secrets.map((entry) => entry.name),
-    ["SAFECAFE_API_ALLOWED_ORIGINS", "SAFECAFE_SAFE_API_KEYS", "SAFECAFE_LLM_API_KEY", "VITE_AGENT_AUTH"],
+    [
+      "SAFECAFE_API_ALLOWED_ORIGINS",
+      "SAFECAFE_TRUST_PROXY_HEADERS",
+      "SAFECAFE_SAFE_API_KEYS",
+      "SAFECAFE_LLM_API_KEY",
+      "VITE_AGENT_AUTH",
+    ],
   )
 })
 
