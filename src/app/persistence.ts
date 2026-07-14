@@ -9,6 +9,7 @@ export const appStorageKeys = {
   userSafeApiKey: "safecafe:user-safe-api-key",
   userLlmConfig: "safecafe:user-llm-config",
   dashboardAction: "safecafe:dashboard-action",
+  layoutDensity: "safecafe:layout-density",
   locale: "safecafe:locale",
   rpcSession: "safecafe:rpc-session",
   safePrice: "safecafe.safeUsdPrice.v1",

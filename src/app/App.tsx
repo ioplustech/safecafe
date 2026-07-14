@@ -107,6 +107,8 @@ import {
   type DiscoveredSafe,
   defaultValidator,
   emptySummary,
+  type LayoutDensity,
+  layoutDensityOptions,
   type Modal,
   type NavItem,
   navItems,
@@ -314,6 +316,10 @@ function initialDashboardAction(pathname: string): DashboardAction {
   return readStorageEnum(appStorageKeys.dashboardAction, dashboardActionOptions, "stake")
 }
 
+function initialLayoutDensity(): LayoutDensity {
+  return readStorageEnum(appStorageKeys.layoutDensity, layoutDensityOptions, "compact")
+}
+
 export function App() {
   const [locale, setLocale] = useState<Locale>(() => {
     const saved = readStorageText(appStorageKeys.locale)
@@ -323,6 +329,7 @@ export function App() {
   const [activeNav, setActiveNav] = useState<NavItem>(() => navFromPath(window.location.pathname))
   const [isMenuOpen, setIsMenuOpen] = useState(false)
   const [isLanguageMenuOpen, setIsLanguageMenuOpen] = useState(false)
+  const [layoutDensity, setLayoutDensity] = useState<LayoutDensity>(() => initialLayoutDensity())
   const [account, setAccount] = useState<Address | null>(null)
   const [stakingAccount, setStakingAccount] = useState<Address | null>(null)
   const [action, setAction] = useState<Action>(() => initialDashboardAction(window.location.pathname))
@@ -1162,6 +1169,11 @@ export function App() {
     setLocale(nextLocale)
     writeStorageText(appStorageKeys.locale, nextLocale)
     setIsLanguageMenuOpen(false)
+  }
+
+  function selectLayoutDensity(nextDensity: LayoutDensity) {
+    setLayoutDensity(nextDensity)
+    writeStorageText(appStorageKeys.layoutDensity, nextDensity)
   }
 
   function navigate(nextNav: NavItem) {
@@ -2232,7 +2244,7 @@ export function App() {
   }
 
   return (
-    <div className="app-shell">
+    <div className="app-shell" data-layout-density={layoutDensity}>
       <header className="topbar">
         <div className="topbar-inner">
           <button
@@ -2591,6 +2603,8 @@ export function App() {
             onUserSafeApiKeyChange={updateUserSafeApiKeyDraft}
             onSaveUserSafeApiKey={saveUserSafeApiKey}
             onClearUserSafeApiKey={clearUserSafeApiKey}
+            layoutDensity={layoutDensity}
+            onLayoutDensityChange={selectLayoutDensity}
             userLlmDraft={userLlmDraft}
             userLlmSaved={Boolean(userLlmConfig)}
             userLlmStatus={userLlmStatus}

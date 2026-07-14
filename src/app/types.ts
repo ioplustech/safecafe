@@ -3,8 +3,10 @@ import type { TxPlanAction, ValidatorInfo } from "../protocol"
 import type { PlanExecutionSummary } from "./planExecution"
 
 export const navItems = ["dashboard", "withdrawals", "rewards", "validators", "settings"] as const
+export const layoutDensityOptions = ["comfortable", "medium", "compact"] as const
 
 export type NavItem = (typeof navItems)[number]
+export type LayoutDensity = (typeof layoutDensityOptions)[number]
 export type Action = TxPlanAction
 
 export const emptySummary = {

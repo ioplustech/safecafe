@@ -29,7 +29,16 @@ import { type ChainTxStepStatus, chainActionBusyLabel, chainTxStepStatuses } fro
 import { formatDelayLabel, merkleLabel, translateTxLabel } from "./formatters"
 import type { MessageBundle } from "./i18n"
 import { sourceRepositoryUrl } from "./releaseTrust"
-import type { AccountSummary, Action, ActionExecutionSummary, DataStatus, Modal, NavItem } from "./types"
+import {
+  type AccountSummary,
+  type Action,
+  type ActionExecutionSummary,
+  type DataStatus,
+  type LayoutDensity,
+  layoutDensityOptions,
+  type Modal,
+  type NavItem,
+} from "./types"
 import {
   ActionButton,
   ButtonBusyLabel,
@@ -1009,10 +1018,12 @@ export function DocsView({
   customRpcSavedUrl,
   customRpcStatus,
   customRpcUrl,
+  layoutDensity,
   onClearCustomRpc,
   onClearUserSafeApiKey,
   onClearUserLlm,
   onCustomRpcChange,
+  onLayoutDensityChange,
   onSaveCustomRpc,
   onSaveUserSafeApiKey,
   onSaveUserLlm,
@@ -1034,10 +1045,12 @@ export function DocsView({
   customRpcSavedUrl: string
   customRpcStatus: CustomRpcStatus
   customRpcUrl: string
+  layoutDensity: LayoutDensity
   onClearCustomRpc: () => void
   onClearUserSafeApiKey: () => void
   onClearUserLlm: () => void
   onCustomRpcChange: (value: string) => void
+  onLayoutDensityChange: (value: LayoutDensity) => void
   onSaveCustomRpc: () => void
   onSaveUserSafeApiKey: () => Promise<void> | void
   onSaveUserLlm: () => Promise<void> | void
@@ -1084,6 +1097,11 @@ export function DocsView({
       : userSafeApiStatus === "invalid"
         ? t.userSafeApiFailed
         : "")
+  const layoutDensityLabels: Record<LayoutDensity, string> = {
+    comfortable: t.layoutDensityComfortable,
+    compact: t.layoutDensityCompact,
+    medium: t.layoutDensityMedium,
+  }
   return (
     <FullPanel>
       <div className="docs-grid">
@@ -1159,6 +1177,30 @@ export function DocsView({
             </div>
           </div>
         </div>
+      </section>
+      <section className="appearance-settings-panel" aria-labelledby="appearance-settings-title">
+        <div className="rpc-settings-heading appearance-settings-heading">
+          <div>
+            <h3 id="appearance-settings-title">{t.appearanceSettingsTitle}</h3>
+            <p>{t.appearanceSettingsDescription}</p>
+          </div>
+        </div>
+        <fieldset className="appearance-settings-row">
+          {/* <legend>{t.layoutDensityLabel}</legend> */}
+          <div className="density-segmented-control">
+            {layoutDensityOptions.map((option) => (
+              <button
+                type="button"
+                className={`density-option${layoutDensity === option ? " active" : ""}`}
+                key={option}
+                aria-pressed={layoutDensity === option}
+                onClick={() => onLayoutDensityChange(option)}
+              >
+                {layoutDensityLabels[option]}
+              </button>
+            ))}
+          </div>
+        </fieldset>
       </section>
       <section className="rpc-settings-panel" aria-labelledby="custom-rpc-title">
         <div className="rpc-settings-heading">
