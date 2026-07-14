@@ -48,3 +48,4 @@ proxies.json
 webshare_proxy.json
 .safe-address-cache.json
 todo.md
+.playwright-cli
